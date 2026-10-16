@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { JournalStorage } from "./journal-storage.js";
 import type {
   JobPriority,
   JobRecord,
@@ -38,13 +39,15 @@ export class QueueEngine extends EventEmitter {
   private readonly defaultTimeoutMs: number;
   private readonly retryBaseDelayMs: number;
   private readonly retryMaxDelayMs: number;
+  private readonly journal: JournalStorage;
 
   private isPaused = false;
+  private isShuttingDown = false;
   private completedTimestamps: number[] = [];
   private totalDurationMs = 0;
   private totalCompletedCount = 0;
 
-  constructor(options: QueueOptions = {}) {
+  constructor(options: QueueOptions & { journalPath?: string; enableJournal?: boolean } = {}) {
     super();
     this.concurrency = options.concurrency ?? 10;
     this.maxQueueCapacity = options.maxQueueCapacity ?? 50000;
@@ -52,6 +55,11 @@ export class QueueEngine extends EventEmitter {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30000;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 200;
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? 5000;
+
+    this.journal = new JournalStorage({
+      filePath: options.journalPath,
+      enabled: options.enableJournal ?? false,
+    });
   }
 
   public registerHandler<T, R>(
@@ -59,6 +67,24 @@ export class QueueEngine extends EventEmitter {
     handler: JobHandler<T, R>
   ): void {
     this.handlers.set(operation, handler as JobHandler);
+  }
+
+  /**
+   * Recovers uncompleted jobs from disk journal following an abrupt server restart/crash.
+   */
+  public recoverFromJournal(): number {
+    const recovered = this.journal.recoverIncompleteJobs();
+    for (const job of recovered) {
+      if (job.idempotencyKey) {
+        this.idempotencyIndex.set(`${job.tenantId}:${job.idempotencyKey}`, job.id);
+      }
+      this.insertWithPriority(job);
+      this.emit("job:recovered", job);
+    }
+    if (recovered.length > 0) {
+      setImmediate(() => this.dispatch());
+    }
+    return recovered.length;
   }
 
   public async enqueue<T = unknown, R = unknown>(params: {
@@ -73,6 +99,10 @@ export class QueueEngine extends EventEmitter {
     timeoutMs?: number;
     batchId?: string;
   }): Promise<{ job: JobRecord<T, R>; isExisting: boolean }> {
+    if (this.isShuttingDown) {
+      throw new Error("SERVER_SHUTTING_DOWN: Queue is in graceful shutdown mode and rejecting new tasks.");
+    }
+
     // 1. Idempotency Check
     if (params.idempotencyKey) {
       const idxKey = `${params.tenantId}:${params.idempotencyKey}`;
@@ -122,8 +152,9 @@ export class QueueEngine extends EventEmitter {
       this.idempotencyIndex.set(`${params.tenantId}:${params.idempotencyKey}`, jobId);
     }
 
-    // 4. Priority Insertion
+    // 4. Priority Insertion & Journaling
     this.insertWithPriority(job as JobRecord);
+    this.journal.recordJobEvent("queued", job as JobRecord);
     this.emit("job:queued", job);
 
     // 5. Trigger dispatch loop
@@ -204,6 +235,20 @@ export class QueueEngine extends EventEmitter {
     setImmediate(() => this.dispatch());
   }
 
+  /**
+   * Graceful shutdown: stops accepting new jobs and waits for active jobs to complete.
+   */
+  public async shutdown(timeoutMs: number = 5000): Promise<void> {
+    this.isShuttingDown = true;
+    this.pause();
+
+    const startTime = Date.now();
+    while (this.activeJobs.size > 0 && Date.now() - startTime < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    this.emit("queue:shutdown", { activeRemaining: this.activeJobs.size });
+  }
+
   public getMetrics(): QueueMetrics {
     const now = Date.now();
     this.completedTimestamps = this.completedTimestamps.filter((t) => now - t <= 60000);
@@ -242,7 +287,7 @@ export class QueueEngine extends EventEmitter {
   }
 
   private async dispatch(): Promise<void> {
-    if (this.isPaused) return;
+    if (this.isPaused || this.isShuttingDown) return;
 
     while (this.activeJobs.size < this.concurrency && this.waitingQueue.length > 0) {
       const job = this.waitingQueue.shift();
@@ -253,6 +298,7 @@ export class QueueEngine extends EventEmitter {
       job.startedAt = new Date();
       job.attempts += 1;
 
+      this.journal.recordJobEvent("started", job);
       this.updateBatchStatus(job.batchId);
       this.emit("job:started", job);
 
@@ -304,6 +350,7 @@ export class QueueEngine extends EventEmitter {
       this.totalDurationMs += job.durationMs;
       this.completedTimestamps.push(completedAt.getTime());
 
+      this.journal.recordJobEvent("completed", job);
       this.updateBatchStatus(job.batchId);
       this.emit("job:completed", job);
     } catch (err) {
@@ -355,6 +402,7 @@ export class QueueEngine extends EventEmitter {
     this.failedJobs.set(job.id, job);
     this.deadLetterJobs.set(job.id, job);
 
+    this.journal.recordJobEvent("failed", job);
     this.updateBatchStatus(job.batchId);
     this.emit("job:failed", job);
     this.emit("job:dlq", job);
