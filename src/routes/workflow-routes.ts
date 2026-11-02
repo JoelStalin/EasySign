@@ -5,6 +5,7 @@ import { CHANNELS, prepareDelivery, type DeliveryProvider, type DeliveryResult }
 import type { ConsentLedger } from "../services/consent-ledger.js";
 import type { ServiceDisclosure } from "../services/legal-notices.js";
 import { NON_QUALIFIED_NOTICE } from "../services/legal-notices.js";
+import { DocumentError, DocumentStore, MAX_DOCUMENT_BYTES, safeFileName } from "../services/document-store.js";
 import { SignatureWorkflow, WorkflowError, type IssuedToken, type SignatureRequest } from "../services/signature-workflow.js";
 
 const Channel = z.enum(CHANNELS as unknown as [string, ...string[]]);
@@ -30,7 +31,7 @@ const signerView = (r: SignatureRequest, signerId: string, disclosure: ServiceDi
   const you = r.signers.find((s) => s.id === signerId);
   return {
     id: r.id, documentName: r.documentName, documentHash: r.documentHash, status: r.status, expiresAt: r.expiresAt, ordering: r.ordering,
-    you: you && { id: you.id, name: you.name, order: you.order, status: you.status }, position: `${you?.order}/${r.signers.length}`,
+    you: you && { id: you.id, name: you.name, order: you.order, status: you.status, documentViewed: Boolean(you.documentViewedAt) }, document: r.document, documentViewed: Boolean(you?.documentViewedAt), position: `${you?.order}/${r.signers.length}`,
     notice: NON_QUALIFIED_NOTICE, disclosure,
   };
 };
@@ -39,6 +40,7 @@ export interface WorkflowRouteOptions {
   /** Public origin used to build signing links, e.g. https://firma.example.do */
   publicBaseUrl?: string;
   providers?: DeliveryProvider[];
+  documents?: DocumentStore;
 }
 
 /**
@@ -48,6 +50,8 @@ export interface WorkflowRouteOptions {
 export function registerWorkflowRoutes(
   app: FastifyInstance, workflow: SignatureWorkflow, consents: ConsentLedger, disclosure: ServiceDisclosure | undefined, adminToken: string | undefined, options: WorkflowRouteOptions = {}
 ): void {
+  const documents = options.documents ?? new DocumentStore();
+  app.addContentTypeParser(["application/pdf", "image/png", "image/jpeg", "text/plain", "application/octet-stream"], { parseAs: "buffer", bodyLimit: MAX_DOCUMENT_BYTES }, (_req, body, done) => done(null, body));
   const admin = (request: FastifyRequest, reply: FastifyReply): string | undefined => {
     if (!adminToken) { reply.code(503).send({ error: "ADMIN_AUTH_NOT_CONFIGURED" }); return undefined; }
     const given = Buffer.from(String(request.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -62,6 +66,7 @@ export function registerWorkflowRoutes(
         const code = hideNotFound && e.code === "NOT_FOUND" ? "UNAUTHORIZED" : e.code; // do not reveal which request ids exist to anonymous callers
         return reply.code(STATUS[code]).send({ error: code, message: code === "UNAUTHORIZED" ? "Invalid signer or token." : e.message });
       }
+      if (e instanceof DocumentError) return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
       throw e;
     }
   };
@@ -86,6 +91,15 @@ export function registerWorkflowRoutes(
   app.post("/v1/signature-workflows/:id/send", async (request, reply) => {
     if (!admin(request, reply)) return;
     if (!disclosure) return reply.code(503).send({ error: "DISCLOSURE_NOT_CONFIGURED", message: "The service disclosure must be published before requests can be sent (Annex II art. 33 b)." });
+    const sendBody = (request.body ?? {}) as { acknowledgeNoDocument?: boolean };
+    try {
+      if (!workflow.get(ids(request).id).document && sendBody.acknowledgeNoDocument !== true) {
+        return reply.code(409).send({ error: "DOCUMENT_REQUIRED", message: "Upload the document (PUT .../document) before sending, or confirm with acknowledgeNoDocument: true that signers will not be able to open it on the platform." });
+      }
+    } catch (e) {
+      if (e instanceof WorkflowError) return reply.code(STATUS[e.code]).send({ error: e.code, message: e.message });
+      throw e;
+    }
     return run(reply, async () => {
       const { request: r, tokens } = workflow.send(ids(request).id);
       const deliveries = await deliver(tokens, r.id);
@@ -125,6 +139,29 @@ export function registerWorkflowRoutes(
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
     const { id, signerId } = ids(request);
     return run(reply, () => signerView(workflow.view(id, signerId, body.data.token), signerId, disclosure), 200, true);
+  });
+  app.put("/v1/signature-workflows/:id/document", async (request, reply) => {
+    if (!admin(request, reply)) return;
+    const raw = request.body;
+    if (!Buffer.isBuffer(raw)) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE", message: "Send the document as application/pdf, image/png, image/jpeg or text/plain." });
+    return run(reply, () => {
+      const r = workflow.get(ids(request).id);
+      const stored = documents.put(raw);
+      if (stored.hash !== r.documentHash) throw new WorkflowError("DOCUMENT_MISMATCH", "The SHA-256 of the uploaded file does not match the documentHash of this request.");
+      return workflow.attachDocument(r.id, { contentType: stored.contentType, size: stored.size, fileName: safeFileName(String(request.headers["x-file-name"] ?? ""), stored.contentType) });
+    });
+  });
+  app.post("/v1/signature-workflows/:id/signers/:signerId/document", async (request, reply) => {
+    const body = TokenOnly.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
+    const { id, signerId } = ids(request);
+    return run(reply, () => {
+      const meta = workflow.documentAccess(id, signerId, body.data.token);
+      const { bytes, contentType } = documents.get(workflow.get(id).documentHash);
+      reply.header("content-type", contentType).header("content-disposition", `inline; filename="${meta.fileName}"`).header("x-content-type-options", "nosniff")
+        .header("cache-control", "no-store").header("content-security-policy", "sandbox; default-src 'none'");
+      return bytes;
+    }, 200, true);
   });
   app.post("/v1/signature-workflows/:id/signers/:signerId/consent", async (request, reply) => {
     if (!disclosure) return reply.code(503).send({ error: "DISCLOSURE_NOT_CONFIGURED" });

@@ -1,20 +1,22 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 
 /**
  * Minimal public signing page opened from the link or the QR. The page is static (no secrets): the one-time token is
  * read from the URL fragment, removed from the address bar, and sent only in request bodies. All text from the API is
  * inserted with textContent (no innerHTML), and a strict CSP forbids inline scripts and external resources.
+ * The signer must open the document before accepting and signing; the server enforces the same rule.
  */
 
-const CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const HTML = `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>Firmar documento</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:640px;margin:0 auto;padding:16px;color:#111}
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:680px;margin:0 auto;padding:16px;color:#111}
 .card{border:1px solid #ccd;border-radius:8px;padding:16px;margin:12px 0}.warn{background:#fff7e0;border-color:#e0b000}
-button{font:inherit;padding:10px 16px;border-radius:6px;border:0;background:#0b5fff;color:#fff;cursor:pointer}
-button.secondary{background:#eee;color:#111}button:disabled{opacity:.5}code{word-break:break-all;font-size:13px}
+button,a.btn{font:inherit;padding:10px 16px;border-radius:6px;border:0;background:#0b5fff;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
+button.secondary,a.btn.secondary{background:#eee;color:#111}button:disabled{opacity:.5}code{word-break:break-all;font-size:13px}
+img.doc{max-width:100%;border:1px solid #ccd}pre.doc{white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;background:#f6f7f9;padding:12px;border-radius:6px}
 .err{color:#b00020}.ok{color:#0a6b2d}</style></head>
 <body><h1>Firma de documento</h1><div id="app"><p>Cargando…</p></div><script src="/sign/app.js"></script></body></html>`;
 
@@ -25,16 +27,48 @@ const JS = `(function () {
   var token = decodeURIComponent((location.hash || "").slice(1));
   history.replaceState(null, "", location.pathname); // the token never stays in the address bar or the history
   var state = null;
+  var docView = null; // what is shown of the document after opening it
 
   function el(tag, text, cls) { var e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
   function clear() { while (app.firstChild) app.removeChild(app.firstChild); }
+  function url(action) { return "/v1/signature-workflows/" + encodeURIComponent(requestId) + "/signers/" + encodeURIComponent(signerId) + "/" + action; }
+  function post(action, extra) {
+    return fetch(url(action), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(Object.assign({ token: token }, extra || {})) });
+  }
   function api(action, extra) {
-    var body = Object.assign({ token: token }, extra || {});
-    return fetch("/v1/signature-workflows/" + encodeURIComponent(requestId) + "/signers/" + encodeURIComponent(signerId) + "/" + action,
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || j.error || "Error"); return j; }); });
+    return post(action, extra).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || j.error || "Error"); return j; }); });
   }
   function fail(e) { clear(); app.appendChild(el("p", "No se pudo continuar: " + e.message + ". Pida un enlace nuevo a quien le envió el documento.", "err")); }
+
+  function openDocument() {
+    return post("document").then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.message || j.error || "Error"); });
+      var type = (r.headers.get("content-type") || "").split(";")[0];
+      if (type === "text/plain") return r.text().then(function (t) { return { type: type, text: t }; });
+      return r.blob().then(function (b) { return { type: type, blobUrl: URL.createObjectURL(b) }; });
+    }).then(function (v) { docView = v; return api("view"); }).then(function (s) { state = s; render(); }).catch(fail);
+  }
+
+  function documentCard() {
+    var box = el("div", undefined, "card");
+    var meta = state.document;
+    box.appendChild(el("h3", "Documento a firmar"));
+    box.appendChild(el("p", meta.fileName + " · " + Math.max(1, Math.round(meta.size / 1024)) + " KB"));
+    if (docView && docView.type === "text/plain") { box.appendChild(el("pre", docView.text, "doc")); }
+    else if (docView && docView.type.indexOf("image/") === 0) { var img = document.createElement("img"); img.className = "doc"; img.alt = "Documento a firmar"; img.src = docView.blobUrl; box.appendChild(img); }
+    else if (docView) {
+      var a = el("a", "Abrir el documento en otra pestaña", "btn"); a.href = docView.blobUrl; a.target = "_blank"; a.rel = "noopener noreferrer"; box.appendChild(a);
+      box.appendChild(document.createTextNode(" "));
+      var d = el("a", "Descargar", "btn secondary"); d.href = docView.blobUrl; d.download = meta.fileName; box.appendChild(d);
+    }
+    if (!docView) {
+      var open = el("button", state.you.documentViewed ? "Volver a ver el documento" : "Abrir el documento");
+      open.onclick = function () { open.disabled = true; openDocument(); };
+      box.appendChild(open);
+    }
+    return box;
+  }
+
   function render() {
     clear();
     var notice = el("div", undefined, "card warn"); notice.appendChild(el("p", state.notice)); app.appendChild(notice);
@@ -49,10 +83,14 @@ const JS = `(function () {
     if (st === "signed") { app.appendChild(el("p", "Usted ya firmó. Gracias.", "ok")); return; }
     if (st === "declined") { app.appendChild(el("p", "Usted rechazó este documento.", "err")); return; }
     var d = state.disclosure;
+    var mustOpen = state.document && !state.documentViewed;
+    if (state.document) app.appendChild(documentCard());
+    else app.appendChild(el("p", "Este documento no está disponible en la plataforma: compare la huella con la del documento que le entregaron.", "err"));
+    if (mustOpen) { app.appendChild(el("p", "Debe abrir el documento antes de continuar.")); return; }
     if (st === "viewed") {
       var box = el("div", undefined, "card");
       box.appendChild(el("h3", "Información previa al contrato"));
-      box.appendChild(el("p", state.disclosure ? state.disclosure.signatureKinds : ""));
+      box.appendChild(el("p", d ? d.signatureKinds : ""));
       if (d) { Object.keys(d.config).forEach(function (k) { box.appendChild(el("p", k + ": " + d.config[k])); }); }
       var label = el("label"); var cb = document.createElement("input"); cb.type = "checkbox"; label.appendChild(cb);
       label.appendChild(document.createTextNode(" He leído y acepto la información anterior y entiendo que esta firma no tiene el valor de la firma digital."));
@@ -75,7 +113,7 @@ const JS = `(function () {
 })();`;
 
 export function registerSignPage(app: FastifyInstance): void {
-  const headers = (reply: import("fastify").FastifyReply) =>
+  const headers = (reply: FastifyReply) =>
     reply.header("content-security-policy", CSP).header("referrer-policy", "no-referrer").header("cache-control", "no-store").header("x-content-type-options", "nosniff");
   app.get("/sign/app.js", async (_req, reply) => headers(reply).type("text/javascript; charset=utf-8").send(JS));
   app.get("/sign/:requestId/:signerId", async (_req, reply) => headers(reply).type("text/html; charset=utf-8").send(HTML));

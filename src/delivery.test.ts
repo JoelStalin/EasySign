@@ -83,7 +83,7 @@ test("API: the client's channel choice, QR on screen, signing page, provider del
   assert.equal(created.statusCode, 201);
   const id = created.json().id;
 
-  const sentRes = (await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h })).json();
+  const sentRes = (await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h, payload: { acknowledgeNoDocument: true } })).json();
   const d = sentRes.deliveries[0];
   assert.equal(d.channel, "qr");
   assert.ok(d.qrSvg.includes("<svg"));

@@ -16,9 +16,10 @@ import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
 import { registerSignPage } from "./routes/sign-page.js";
 import type { DeliveryProvider } from "./services/delivery.js";
+import { DocumentStore } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[] } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
   const app = Fastify({ logger: false });
 
   const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
@@ -90,6 +91,7 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, adminToken, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
     providers: options.deliveryProviders,
+    documents: options.documents ?? new DocumentStore(process.env.EASYSIGN_DOCS_DIR),
   });
   registerSignPage(app);
 
