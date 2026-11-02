@@ -7,7 +7,7 @@ import type { WebhookDispatcher } from "../services/webhook-dispatcher.js";
 const AsyncTransactionSchema = z.object({
   tenantId: z.string().min(1),
   operation: z.enum(["sign_ecf_xml", "sign_pdf", "verify_signature", "batch_sign_item"]),
-  data: z.record(z.any()),
+  data: z.record(z.string(), z.any()),
   priority: z.enum(["critical", "high", "normal", "bulk"]).optional(),
   idempotencyKey: z.string().optional(),
   webhookUrl: z.string().url().optional(),
@@ -21,7 +21,7 @@ const BatchTransactionSchema = z.object({
   items: z.array(
     z.object({
       operation: z.enum(["sign_ecf_xml", "sign_pdf", "verify_signature", "batch_sign_item"]),
-      data: z.record(z.any()),
+      data: z.record(z.string(), z.any()),
       priority: z.enum(["critical", "high", "normal", "bulk"]).optional(),
       idempotencyKey: z.string().optional(),
     })
