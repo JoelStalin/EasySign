@@ -10,10 +10,15 @@ import { CertificateRegistry } from "./services/certificate-registry.js";
 import { readFileSync } from "node:fs";
 import { registerConsentRoutes } from "./routes/consent-routes.js";
 import { ConsentLedger } from "./services/consent-ledger.js";
+import { registerAuditRoutes } from "./routes/audit-routes.js";
+import { AuditLog } from "./services/audit-log.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog } = {}) {
   const app = Fastify({ logger: false });
+
+  const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
+  registerAuditRoutes(app, options.auditLog ?? new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE }), adminToken);
 
   const queue = new QueueEngine({
     concurrency: options.queueConcurrency ?? 10,
@@ -53,7 +58,6 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   registerTransactionRoutes(app, { queue, sseHub, webhookDispatcher });
 
   const registry = options.registry ?? new CertificateRegistry({ filePath: process.env.EASYSIGN_REGISTRY_FILE });
-  const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
   registerRegistryRoutes(app, registry, adminToken);
 
   const disclosureFile = process.env.EASYSIGN_DISCLOSURE_FILE;
