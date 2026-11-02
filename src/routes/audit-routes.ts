@@ -1,17 +1,20 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { AuditLog } from "../services/audit-log.js";
+import { Guard, tenantOf, type Role } from "../auth/guard.js";
 
 const CORRELATION = /^[A-Za-z0-9._-]{8,80}$/;
 /** Mutating requests on these prefixes are always audited, including denied ones. */
 const AUDITED = ["/v1/registry/", "/v1/consents", "/v1/audit/export", "/v1/signature-workflows"];
+const AUDIT_READERS: Role[] = ["platform_admin", "tenant_admin", "auditor"];
 
 /**
  * Assigns a correlation ID to every request (echoed in `X-Correlation-Id`) and records mutating calls to the
  * regulated endpoints with their outcome. Bodies are never stored, only the tenant when present and the status code.
- * Reading and exporting the ledger needs the admin token (fail closed).
+ * The actor is the authenticated principal's subject. Reading and exporting the ledger needs an auditing role and is
+ * limited to the caller's own tenant, except for platform admins.
  */
-export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, adminToken: string | undefined): void {
+export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, guard: Guard): void {
   app.addHook("onRequest", async (request, reply) => {
     const given = request.headers["x-correlation-id"];
     const id = typeof given === "string" && CORRELATION.test(given) ? given : randomUUID();
@@ -27,33 +30,29 @@ export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, admin
     const code = reply.statusCode;
     audit.record({
       correlationId: (request as unknown as { correlationId: string }).correlationId,
-      tenantId: typeof body.tenantId === "string" && body.tenantId ? body.tenantId : "platform",
-      actor: path.includes("/signers/") ? "signer" : code === 401 || code === 503 ? "anonymous" : "registry-admin",
+      tenantId: request.principal && !request.principal.roles.includes("platform_admin") && request.principal.tenantId ? request.principal.tenantId : typeof body.tenantId === "string" && body.tenantId ? body.tenantId : "platform",
+      actor: path.includes("/signers/") ? "signer" : request.principal?.sub ?? "anonymous",
       action: `${request.method} ${request.routeOptions?.url ?? path}`,
       resource: path,
       outcome: code < 400 ? "success" : code === 401 || code === 403 || code === 503 ? "denied" : "error",
-      details: { statusCode: code },
+      details: typeof body.tenantId === "string" && body.tenantId ? { statusCode: code, targetTenant: body.tenantId } : { statusCode: code },
     });
   });
 
-  const authorized = (header: unknown): boolean => {
-    if (!adminToken) return false;
-    const given = Buffer.from(String(header ?? "").replace(/^Bearer\s+/i, ""));
-    const expected = Buffer.from(adminToken);
-    return given.length === expected.length && timingSafeEqual(given, expected);
-  };
-
   app.get("/v1/audit/events", async (request, reply) => {
-    if (!adminToken) return reply.code(503).send({ error: "ADMIN_AUTH_NOT_CONFIGURED" });
-    if (!authorized(request.headers.authorization)) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    const p = await guard.require(request, reply, AUDIT_READERS);
+    if (!p) return;
     const q = request.query as Record<string, string | undefined>;
-    return { chainValid: audit.verifyChain(), events: audit.query({ tenantId: q.tenantId, action: q.action, correlationId: q.correlationId, from: q.from, to: q.to, limit: q.limit ? Number(q.limit) : undefined }) };
+    const platform = p.roles.includes("platform_admin");
+    const tenantId = platform ? q.tenantId : p.tenantId; // tenant roles can only ever see their own tenant
+    if (!platform && !tenantId) return reply.code(403).send({ error: "FORBIDDEN", message: "Your token has no tenant." });
+    return { chainValid: audit.verifyChain(), events: audit.query({ tenantId, action: q.action, correlationId: q.correlationId, from: q.from, to: q.to, limit: q.limit ? Number(q.limit) : undefined }) };
   });
 
   app.post("/v1/audit/export", async (request, reply) => {
-    if (!adminToken) return reply.code(503).send({ error: "ADMIN_AUTH_NOT_CONFIGURED" });
-    if (!authorized(request.headers.authorization)) return reply.code(401).send({ error: "UNAUTHORIZED" });
-    const tenantId = (request.body as { tenantId?: string } | undefined)?.tenantId;
+    const tenantId = tenantOf(request.body);
+    const p = await guard.require(request, reply, AUDIT_READERS, tenantId);
+    if (!p) return;
     if (!tenantId) return reply.code(400).send({ error: "INVALID_REQUEST", message: "tenantId is required." });
     return audit.exportEvidence(tenantId);
   });

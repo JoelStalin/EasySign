@@ -1,10 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { CHANNELS, prepareDelivery, type DeliveryProvider, type DeliveryResult } from "../services/delivery.js";
 import type { ConsentLedger } from "../services/consent-ledger.js";
 import type { ServiceDisclosure } from "../services/legal-notices.js";
 import { NON_QUALIFIED_NOTICE } from "../services/legal-notices.js";
+import { READERS, WRITERS, tenantOf, type Guard } from "../auth/guard.js";
 import { DocumentError, DocumentStore, MAX_DOCUMENT_BYTES, safeFileName } from "../services/document-store.js";
 import { SignatureWorkflow, WorkflowError, type IssuedToken, type SignatureRequest } from "../services/signature-workflow.js";
 
@@ -48,16 +48,16 @@ export interface WorkflowRouteOptions {
  * signer's one-time token in the body. Interim access control until OIDC/RBAC (ES-005).
  */
 export function registerWorkflowRoutes(
-  app: FastifyInstance, workflow: SignatureWorkflow, consents: ConsentLedger, disclosure: ServiceDisclosure | undefined, adminToken: string | undefined, options: WorkflowRouteOptions = {}
+  app: FastifyInstance, workflow: SignatureWorkflow, consents: ConsentLedger, disclosure: ServiceDisclosure | undefined, guard: Guard, options: WorkflowRouteOptions = {}
 ): void {
   const documents = options.documents ?? new DocumentStore();
   app.addContentTypeParser(["application/pdf", "image/png", "image/jpeg", "text/plain", "application/octet-stream"], { parseAs: "buffer", bodyLimit: MAX_DOCUMENT_BYTES }, (_req, body, done) => done(null, body));
-  const admin = (request: FastifyRequest, reply: FastifyReply): string | undefined => {
-    if (!adminToken) { reply.code(503).send({ error: "ADMIN_AUTH_NOT_CONFIGURED" }); return undefined; }
-    const given = Buffer.from(String(request.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
-    const expected = Buffer.from(adminToken);
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) { reply.code(401).send({ error: "UNAUTHORIZED" }); return undefined; }
-    return "workflow-admin";
+  const admin = async (request: FastifyRequest, reply: FastifyReply, roles: typeof WRITERS, tenantId?: string, hideForeign = false): Promise<string | undefined> => (await guard.require(request, reply, roles, tenantId, hideForeign))?.sub;
+  /** Authorizes an action on an existing request: the tenant is the request's own; an unknown or foreign id looks the same to tenant roles. */
+  const forRequest = async (request: FastifyRequest, reply: FastifyReply, roles: typeof WRITERS = WRITERS): Promise<string | undefined> => {
+    let tenant = "";
+    try { tenant = workflow.get((request.params as { id: string }).id).tenantId; } catch { /* unknown id: matches no tenant */ }
+    return admin(request, reply, roles, tenant, true);
   };
   const run = async (reply: FastifyReply, fn: () => unknown | Promise<unknown>, okCode = 200, hideNotFound = false) => {
     try { return reply.code(okCode).send(await fn()); }
@@ -83,13 +83,13 @@ export function registerWorkflowRoutes(
 
   // ---- admin ----
   app.post("/v1/signature-workflows", async (request, reply) => {
-    const actor = admin(request, reply); if (!actor) return;
+    const actor = await admin(request, reply, WRITERS, tenantOf(request.body)); if (!actor) return;
     const body = CreateSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST", issues: body.error.issues });
     return run(reply, () => workflow.create(body.data as Parameters<SignatureWorkflow["create"]>[0], actor), 201);
   });
   app.post("/v1/signature-workflows/:id/send", async (request, reply) => {
-    if (!admin(request, reply)) return;
+    if (!(await forRequest(request, reply))) return;
     if (!disclosure) return reply.code(503).send({ error: "DISCLOSURE_NOT_CONFIGURED", message: "The service disclosure must be published before requests can be sent (Annex II art. 33 b)." });
     const sendBody = (request.body ?? {}) as { acknowledgeNoDocument?: boolean };
     try {
@@ -107,7 +107,7 @@ export function registerWorkflowRoutes(
     });
   });
   app.post("/v1/signature-workflows/:id/signers/:signerId/reissue", async (request, reply) => {
-    if (!admin(request, reply)) return;
+    if (!(await forRequest(request, reply))) return;
     const body = ReissueBody.safeParse(request.body ?? {});
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST", issues: body.error.issues });
     const { id, signerId } = ids(request);
@@ -118,15 +118,15 @@ export function registerWorkflowRoutes(
     });
   });
   app.post("/v1/signature-workflows/:id/cancel", async (request, reply) => {
-    if (!admin(request, reply)) return;
+    if (!(await forRequest(request, reply))) return;
     const body = CancelBody.safeParse(request.body ?? {});
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST", issues: body.error.issues });
     return run(reply, () => workflow.cancel(ids(request).id, body.data.reason));
   });
-  app.get("/v1/signature-workflows/:id", async (request, reply) => { if (!admin(request, reply)) return; return run(reply, () => workflow.get(ids(request).id)); });
-  app.get("/v1/signature-workflows/:id/evidence", async (request, reply) => { if (!admin(request, reply)) return; return run(reply, () => workflow.evidence(ids(request).id)); });
+  app.get("/v1/signature-workflows/:id", async (request, reply) => { if (!(await forRequest(request, reply, READERS))) return; return run(reply, () => workflow.get(ids(request).id)); });
+  app.get("/v1/signature-workflows/:id/evidence", async (request, reply) => { if (!(await forRequest(request, reply, READERS))) return; return run(reply, () => workflow.evidence(ids(request).id)); });
   app.post("/v1/signature-workflows/:id/next-tokens", async (request, reply) => {
-    if (!admin(request, reply)) return;
+    if (!(await forRequest(request, reply))) return;
     const id = ids(request).id;
     const deliveries = pendingNext.get(id) ?? [];
     pendingNext.delete(id);
@@ -141,7 +141,7 @@ export function registerWorkflowRoutes(
     return run(reply, () => signerView(workflow.view(id, signerId, body.data.token), signerId, disclosure), 200, true);
   });
   app.put("/v1/signature-workflows/:id/document", async (request, reply) => {
-    if (!admin(request, reply)) return;
+    if (!(await forRequest(request, reply))) return;
     const raw = request.body;
     if (!Buffer.isBuffer(raw)) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE", message: "Send the document as application/pdf, image/png, image/jpeg or text/plain." });
     return run(reply, () => {
