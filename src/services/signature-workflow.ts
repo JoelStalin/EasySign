@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { NON_QUALIFIED_NOTICE } from "./legal-notices.js";
+import { CHANNELS, type DeliveryChannel } from "./delivery.js";
 
 /**
  * Signature request workflow (backlog ES-009) for a NON-QUALIFIED electronic signature provider (Route A).
@@ -12,7 +13,7 @@ import { NON_QUALIFIED_NOTICE } from "./legal-notices.js";
 
 export type RequestStatus = "draft" | "pending" | "completed" | "cancelled" | "expired";
 export type SignerStatus = "waiting" | "notified" | "viewed" | "consented" | "signed" | "declined";
-type EventType = "created" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed";
+type EventType = "created" | "reissued" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed";
 
 export interface WorkflowEvent {
   seq: number;
@@ -30,6 +31,8 @@ export interface Signer {
   name: string;
   email: string;
   order: number;
+  channel: DeliveryChannel;
+  phone?: string;
   status: SignerStatus;
   consentedAt?: string;
   signedAt?: string;
@@ -67,10 +70,10 @@ export interface CreateInput {
   documentHash: string;
   ordering?: "sequential" | "parallel";
   expiresInHours?: number;
-  signers: Array<{ name: string; email: string }>;
+  signers: Array<{ name: string; email: string; channel?: DeliveryChannel; phone?: string }>;
 }
 
-export interface IssuedToken { signerId: string; name: string; email: string; order: number; token: string }
+export interface IssuedToken { signerId: string; name: string; email: string; phone?: string; order: number; token: string; channel: DeliveryChannel }
 
 const GENESIS = "0".repeat(64);
 const MAX_ATTEMPTS = 5;
@@ -134,6 +137,7 @@ export class SignatureWorkflow {
     };
     switch (e.type) {
       case "sent": r.status = "pending"; issue(e.detail.tokenHashes as Record<string, string>); break;
+      case "reissued": issue(e.detail.tokenHashes as Record<string, string>); break;
       case "viewed": if (s && s.status === "notified") s.status = "viewed"; break;
       case "consented": if (s) { s.status = "consented"; s.consentedAt = e.at; } break;
       case "signed": if (s) { s.status = "signed"; s.signedAt = e.at; } issue(e.detail.nextTokenHashes as Record<string, string>); break;
@@ -187,7 +191,7 @@ export class SignatureWorkflow {
     for (const s of targets) {
       const token = newToken();
       hashes[s.id] = sha256(token);
-      tokens.push({ signerId: s.id, name: s.name, email: s.email, order: s.order, token });
+      tokens.push({ signerId: s.id, name: s.name, email: s.email, phone: s.phone, order: s.order, token, channel: s.channel });
     }
     return { tokens, hashes };
   }
@@ -204,7 +208,12 @@ export class SignatureWorkflow {
     if (!(hours >= 1 && hours <= 720)) throw new WorkflowError("INVALID_INPUT", "expiresInHours must be between 1 and 720.");
 
     const id = randomUUID();
-    const signers = input.signers.map((s, i) => ({ id: randomUUID(), name: s.name.trim(), email: emails[i], order: i + 1 }));
+    for (const s of input.signers) {
+      const ch = s.channel ?? "link";
+      if (!CHANNELS.includes(ch)) throw new WorkflowError("INVALID_INPUT", `channel must be one of ${CHANNELS.join(", ")}.`);
+      if (ch === "whatsapp" && !/^\+[1-9]\d{7,14}$/.test(s.phone ?? "")) throw new WorkflowError("INVALID_INPUT", "A WhatsApp signer needs a phone in international format, e.g. +18095550100.");
+    }
+    const signers = input.signers.map((s, i) => ({ id: randomUUID(), name: s.name.trim(), email: emails[i], order: i + 1, channel: (s.channel ?? "link") as DeliveryChannel, phone: s.phone?.trim() || undefined }));
     this.append("created", id, {
       tenantId: input.tenantId, documentName: input.documentName.trim(), documentHash: input.documentHash, ordering: input.ordering ?? "sequential",
       expiresAt: new Date(this.now().getTime() + hours * 3600_000).toISOString(), signers, createdBy: actor,
@@ -261,6 +270,25 @@ export class SignatureWorkflow {
     if (r.status !== "draft" && r.status !== "pending") throw new WorkflowError("INVALID_STATE", `A ${r.status} request cannot be cancelled.`);
     this.append("cancelled", requestId, { reason: reason.slice(0, 300) });
     return this.get(requestId);
+  }
+
+  /**
+   * New one-time token for a signer whose turn has come (lost link, lockout, or a restart that dropped pending tokens).
+   * The previous token stops working. The client may switch channel (e.g. from email to an on-screen QR).
+   */
+  public reissue(requestId: string, signerId: string, channel?: DeliveryChannel): IssuedToken {
+    const r = this.req(requestId);
+    this.expireIfDue(r);
+    if (r.status !== "pending") throw new WorkflowError(r.status === "expired" ? "EXPIRED" : "INVALID_STATE", `The request is ${r.status}.`);
+    const s = r.signers.find((x) => x.id === signerId);
+    if (!s) throw new WorkflowError("NOT_FOUND", "Signer not found in this request.");
+    if (!(["notified", "viewed", "consented"] as SignerStatus[]).includes(s.status)) throw new WorkflowError("INVALID_STATE", `A signer in status ${s.status} cannot be re-issued.`);
+    if (channel && !CHANNELS.includes(channel)) throw new WorkflowError("INVALID_INPUT", "Unknown channel.");
+    if (channel === "whatsapp" && !s.phone) throw new WorkflowError("INVALID_INPUT", "This signer has no phone for WhatsApp.");
+    const { tokens, hashes } = this.issueFor(r, [channel ? { ...s, channel } : s]);
+    this.append("reissued", requestId, { tokenHashes: hashes, channel: tokens[0].channel }, signerId);
+    this.failures.delete(`${requestId}:${signerId}`);
+    return tokens[0];
   }
 
   public get(requestId: string): SignatureRequest {
