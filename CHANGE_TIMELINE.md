@@ -52,3 +52,10 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Orden de trámites sugerido (a confirmar con abogado y contador):** RNC de la SRL → Registro Mercantil y nombre comercial vigentes → certificación DGII → registro de marcas → comunicación al INDOTEL dentro de los 30 días desde que se preste el servicio (art. 27.3).
 - **Sin dependencia del RNC (pendiente de visto bueno):** PostgreSQL con aislamiento por empresa, OIDC/RBAC, interfaz de OTP y abstracción de proveedores de correo y WhatsApp.
 - **Revertir:** documentación solamente.
+
+## 2026-11-02 (continuación) OIDC con roles, aislamiento por empresa y traspaso a la nube
+
+- **Visto bueno del dueño** para empezar PostgreSQL y OIDC. Fase 1 hecha: OIDC (JWKS, emisor, audiencia, algoritmos asimétricos), cuatro roles (`platform_admin`, `tenant_admin`, `tenant_operator`, `auditor`), aislamiento por empresa en registro, consentimientos, auditoría y solicitudes de firma (la solicitud de otra empresa responde 404). Con OIDC activo el token estático queda desactivado salvo `EASYSIGN_ALLOW_STATIC_ADMIN_TOKEN=true`. Rama `feat/easysign-oidc-rbac`, 66/66 pruebas. Detalle en `docs/OIDC_RBAC.md`.
+- **Fase 2 (PostgreSQL con RLS) no empezada.** Notas de diseño en `docs/HANDOFF_CLOUD.md`.
+- **Traspaso para continuar en la nube:** `docs/HANDOFF_CLOUD.md` y `CLAUDE.md` (palabra clave `RETOMAR EASYSIGN`) en la rama `feat/easysign-oidc-rbac`, que contiene todas las demás ramas.
+- **Revertir:** `git revert` de los commits de la rama; solo código nuevo de autenticación y documentación.
