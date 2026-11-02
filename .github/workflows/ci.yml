@@ -35,8 +35,3 @@ jobs:
       - run: npm ci
       - name: Dependency audit
         run: npm audit --audit-level=moderate
-      - name: Dependency review
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: moderate
