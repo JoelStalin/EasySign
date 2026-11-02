@@ -33,3 +33,13 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 **Pendiente que necesita decisión o insumos del dueño:** datos legales de la sociedad (comunicación al INDOTEL, nada se envía sin su confirmación), proveedores de correo/WhatsApp y OTP, abogado/organismo de conformidad/aseguradora/HSM para la Ruta B, y autorización para fusionar a `main`.
 
 **Revertir este bloque:** cerrar los PR sin fusionar, o revertir en orden inverso (#18 → #10). Esta bitácora es solo documentación.
+
+## 2026-11-02 (continuación) Preguntas regulatorias del dueño del producto
+
+| Pregunta | Respuesta (Res. INDOTEL 067-2025) | Dónde quedó | Commit |
+|---|---|---|---|
+| ¿Una persona física puede ser proveedora de firma? | No para Entidad de Certificación (Anexo II art. 12.1) ni para Proveedor de Servicios de Firma Electrónica (art. 27.1): se requiere persona jurídica. Sí para Unidad de Registro (art. 19.1). Pendiente confirmar Ley 126-02 y Reglamento 335-03 con abogado. | `docs/INDOTEL_REQUIREMENTS.md` (PR #11) | 0b2c377 |
+| ¿La plataforma puede llamarse distinto de la sociedad (p. ej. GetUpSoft SRL opera EasySign)? | Sí: la norma no regula nombres comerciales; exige identificar siempre a la sociedad, no usar "Entidad de Certificación" y no inducir a error sobre el valor legal. Marca/ONAPI y búsqueda de anterioridad quedan para el abogado (no se hizo). | `docs/INDOTEL_REQUIREMENTS.md` (PR #11) y campo opcional `platformName` en el aviso previo (PR #20) | 9f39b0e, a5a7b01 |
+
+**Consecuencia práctica:** hay que constituir (o usar) una sociedad para las Rutas A y B; los datos legales pendientes son los de esa sociedad.
+**Revertir:** `git revert` de cada commit; son cambios de documentación salvo a5a7b01 (campo opcional `platformName`).
