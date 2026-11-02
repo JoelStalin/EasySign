@@ -13,7 +13,7 @@ import { CHANNELS, type DeliveryChannel } from "./delivery.js";
 
 export type RequestStatus = "draft" | "pending" | "completed" | "cancelled" | "expired";
 export type SignerStatus = "waiting" | "notified" | "viewed" | "consented" | "signed" | "declined";
-type EventType = "created" | "reissued" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed";
+type EventType = "created" | "document_attached" | "document_viewed" | "reissued" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed";
 
 export interface WorkflowEvent {
   seq: number;
@@ -35,6 +35,7 @@ export interface Signer {
   phone?: string;
   status: SignerStatus;
   consentedAt?: string;
+  documentViewedAt?: string;
   signedAt?: string;
   declinedReason?: string;
 }
@@ -51,6 +52,8 @@ export interface SignatureRequest {
   expiresAt: string;
   completedAt?: string;
   cancelReason?: string;
+  /** The document the signers must open before accepting and signing (stored in the document store under documentHash). */
+  document?: { contentType: string; size: number; fileName: string };
   signers: Signer[];
 }
 
@@ -137,6 +140,8 @@ export class SignatureWorkflow {
     };
     switch (e.type) {
       case "sent": r.status = "pending"; issue(e.detail.tokenHashes as Record<string, string>); break;
+      case "document_attached": r.document = { contentType: String(e.detail.contentType), size: Number(e.detail.size), fileName: String(e.detail.fileName) }; break;
+      case "document_viewed": if (s && !s.documentViewedAt) s.documentViewedAt = e.at; break;
       case "reissued": issue(e.detail.tokenHashes as Record<string, string>); break;
       case "viewed": if (s && s.status === "notified") s.status = "viewed"; break;
       case "consented": if (s) { s.status = "consented"; s.consentedAt = e.at; } break;
@@ -241,6 +246,7 @@ export class SignatureWorkflow {
   public consent(requestId: string, signerId: string, token: string, disclosureHash: string, expectedDisclosureHash: string, evidence: { ip?: string; userAgent?: string }): SignatureRequest {
     const { s } = this.authenticate(requestId, signerId, token);
     if (s.status !== "viewed") throw new WorkflowError("INVALID_STATE", `The signer must view the document first (status: ${s.status}).`);
+    if (this.requests.get(requestId)!.document && !s.documentViewedAt) throw new WorkflowError("INVALID_STATE", "The signer must open the document before accepting the terms.");
     if (disclosureHash !== expectedDisclosureHash) throw new WorkflowError("INVALID_INPUT", "The accepted disclosure is not the current one.");
     this.append("consented", requestId, { disclosureHash, ...evidence }, signerId);
     return this.get(requestId);
@@ -249,6 +255,7 @@ export class SignatureWorkflow {
   public sign(requestId: string, signerId: string, token: string, documentHash: string, evidence: { ip?: string; userAgent?: string }): { request: SignatureRequest; next: IssuedToken[] } {
     const { r, s } = this.authenticate(requestId, signerId, token);
     if (s.status !== "consented") throw new WorkflowError("INVALID_STATE", "The signer must accept the service terms before signing.");
+    if (r.document && !s.documentViewedAt) throw new WorkflowError("INVALID_STATE", "The signer must open the document before signing.");
     if (documentHash !== r.documentHash) throw new WorkflowError("DOCUMENT_MISMATCH", "The confirmed document hash does not match the document of this request.");
     if (r.ordering === "sequential" && r.signers.some((x) => x.order < s.order && x.status !== "signed")) throw new WorkflowError("NOT_YOUR_TURN", "Previous signers have not signed yet.");
 
@@ -289,6 +296,22 @@ export class SignatureWorkflow {
     this.append("reissued", requestId, { tokenHashes: hashes, channel: tokens[0].channel }, signerId);
     this.failures.delete(`${requestId}:${signerId}`);
     return tokens[0];
+  }
+
+  /** Registers that the document bytes were stored for this request (draft only). The bytes' hash is checked by the caller. */
+  public attachDocument(requestId: string, meta: { contentType: string; size: number; fileName: string }): SignatureRequest {
+    const r = this.req(requestId);
+    if (r.status !== "draft") throw new WorkflowError("INVALID_STATE", `A document can only be attached to a draft (current: ${r.status}).`);
+    this.append("document_attached", requestId, { ...meta });
+    return this.get(requestId);
+  }
+
+  /** Authenticates the signer and records, once, that they opened the document. Returns the document metadata. */
+  public documentAccess(requestId: string, signerId: string, token: string): { contentType: string; size: number; fileName: string } {
+    const { r, s } = this.authenticate(requestId, signerId, token);
+    if (!r.document) throw new WorkflowError("INVALID_STATE", "This request has no document on the platform.");
+    if (!s.documentViewedAt) this.append("document_viewed", requestId, {}, signerId);
+    return r.document;
   }
 
   public get(requestId: string): SignatureRequest {
