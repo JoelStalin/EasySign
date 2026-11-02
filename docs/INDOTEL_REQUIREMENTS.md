@@ -14,6 +14,15 @@ Fuente primaria: [Resolución INDOTEL 067-2025](https://indotel.gob.do/wp-conten
 
 **Consecuencia para DGII:** la DGII exige que el e-CF se firme con un certificado emitido por una entidad autorizada por INDOTEL. Un Proveedor no cualificado **no** sirve para firmar e-CF ante la DGII. Para eso hace falta ser Entidad de Certificación (o emitir a través de una).
 
+### ¿Puede una persona física ser proveedora?
+| Figura | ¿Persona física? | Fuente (Res. 067-2025) |
+|---|---|---|
+| Entidad de Certificación | **No.** Institución o persona jurídica, constituida en RD o en el extranjero, con domicilio legal en RD | Anexo II art. 12.1 |
+| Proveedor de Servicios de Firma Electrónica (no cualificado) | **No.** "Personas jurídicas, nacionales o extranjeras, públicas o privadas" | Anexo II art. 27.1 |
+| Unidad de Registro | **Sí.** "Persona física o jurídica, nacional o extranjera" (con autorización del INDOTEL) | Anexo II art. 19.1 |
+
+Consecuencia: para operar la Ruta A o la Ruta B hace falta una **sociedad** (la comunicación del proveedor incluye Registro Mercantil y certificación de la DGII de estar al día, Anexo II art. 28.1.2). Una persona física solo puede aspirar a ser **Unidad de Registro** (verificar identidad de solicitantes para una Entidad de Certificación), y aun así con autorización. Puede, por supuesto, ser **suscriptora** (titular de un certificado) o usuaria. Pendiente de confirmar con el abogado: Ley 126-02 y Reglamento 335-03 (arts. 66-67), que no se han leído en detalle y podrían añadir condiciones.
+
 ## 2. Ruta A — Proveedor de Servicios de Firma Electrónica (Anexo II, cap. III)
 
 | Req. | Obligación | Estado en EasySign |
