@@ -43,3 +43,12 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 
 **Consecuencia práctica:** hay que constituir (o usar) una sociedad para las Rutas A y B; los datos legales pendientes son los de esa sociedad.
 **Revertir:** `git revert` de cada commit; son cambios de documentación salvo a5a7b01 (campo opcional `platformName`).
+
+## 2026-11-02 (continuación) Estructura legal del operador
+
+- **GetUpSoft es una SRL** (sociedad), registrada a nombre del dueño del producto. Cumple el requisito de persona jurídica de la Ruta A (Res. 067-2025, Anexo II art. 27.1).
+- **Su RNC aún no está emitido.** No debe confundirse con el RNC del dueño como persona física. La comunicación al INDOTEL (art. 28) exige RNC, Registro Mercantil vigente y certificación de la DGII de estar al día, por lo que **queda en espera**; no se ha enviado nada ni se ha ofrecido el servicio al público.
+- **EasySign y EasyCount no están registrados como marca ni nombre comercial.** Pendiente con el abogado: búsqueda de anterioridad y registro ante la ONAPI; si la marca queda a nombre de la persona física y la opera la SRL, contrato de licencia o cesión.
+- **Orden de trámites sugerido (a confirmar con abogado y contador):** RNC de la SRL → Registro Mercantil y nombre comercial vigentes → certificación DGII → registro de marcas → comunicación al INDOTEL dentro de los 30 días desde que se preste el servicio (art. 27.3).
+- **Sin dependencia del RNC (pendiente de visto bueno):** PostgreSQL con aislamiento por empresa, OIDC/RBAC, interfaz de OTP y abstracción de proveedores de correo y WhatsApp.
+- **Revertir:** documentación solamente.
