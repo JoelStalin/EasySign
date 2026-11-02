@@ -5,8 +5,10 @@ import { SigningEngine } from "./services/signing-engine.js";
 import { WebhookDispatcher } from "./services/webhook-dispatcher.js";
 import { SseHub } from "./services/sse-hub.js";
 import { registerTransactionRoutes } from "./routes/transaction-routes.js";
+import { registerRegistryRoutes } from "./routes/registry-routes.js";
+import { CertificateRegistry } from "./services/certificate-registry.js";
 
-export function buildApp(options: { queueConcurrency?: number } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string } = {}) {
   const app = Fastify({ logger: false });
 
   const queue = new QueueEngine({
@@ -46,12 +48,15 @@ export function buildApp(options: { queueConcurrency?: number } = {}) {
 
   registerTransactionRoutes(app, { queue, sseHub, webhookDispatcher });
 
+  const registry = options.registry ?? new CertificateRegistry({ filePath: process.env.EASYSIGN_REGISTRY_FILE });
+  registerRegistryRoutes(app, registry, "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN);
+
   app.get("/v1/system/status", async () => ({
     service: "easysign",
     mode: "sandbox",
     accredited: false,
     engine: "NodeNext-Queue-Architecture",
-    dgiiComplianceReady: true,
+    dgiiComplianceReady: false,
   }));
 
   const legacyRequestSchema = z.object({
