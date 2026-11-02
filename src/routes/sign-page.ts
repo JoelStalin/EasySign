@@ -72,6 +72,8 @@ const JS = `(function () {
   function render() {
     clear();
     var notice = el("div", undefined, "card warn"); notice.appendChild(el("p", state.notice)); app.appendChild(notice);
+    var cfg = state.disclosure && state.disclosure.config;
+    if (cfg && cfg.platformName) { app.appendChild(el("p", "Plataforma " + cfg.platformName + ", operada por " + cfg.providerName + " (RNC " + cfg.rnc + ")")); }
     var doc = el("div", undefined, "card");
     doc.appendChild(el("h2", state.documentName));
     doc.appendChild(el("p", "Huella SHA-256 del documento:")); doc.appendChild(el("code", state.documentHash));

@@ -20,6 +20,8 @@ export const SIGNATURE_KINDS_EXPLANATION = [
 /** Art. 33 b: what must be told before the subscriber contracts. Every field is mandatory. */
 export interface ServiceDisclosureConfig {
   providerName: string;
+  /** Brand of the platform when it differs from the company name (e.g. "EasySign" operated by "GetUpSoft SRL"). Optional. */
+  platformName?: string;
   rnc: string;
   /** Domicilio en la República Dominicana. */
   address: string;
@@ -57,8 +59,9 @@ export function buildServiceDisclosure(config: Partial<ServiceDisclosureConfig>,
   const missing = REQUIRED.filter((k) => !String(config[k] ?? "").trim());
   if (missing.length) throw new DisclosureError(missing);
   const c = config as ServiceDisclosureConfig;
-  if (FORBIDDEN_NAME.test(c.providerName) || FORBIDDEN_NAME.test(c.serviceDescription)) {
-    throw new DisclosureError(["providerName/serviceDescription must not use 'Entidad de Certificación' (art. 29.3)"]);
+  if (c.platformName !== undefined && (!c.platformName.trim() || c.platformName.length > 80)) throw new DisclosureError(["platformName must be 1-80 characters when provided"]);
+  if (FORBIDDEN_NAME.test(c.providerName) || FORBIDDEN_NAME.test(c.serviceDescription) || FORBIDDEN_NAME.test(c.platformName ?? "")) {
+    throw new DisclosureError(["providerName/serviceDescription must not use 'Entidad de Certificación' (art. 29.3); the same applies to platformName"]);
   }
   const body = { version, nonQualifiedNotice: NON_QUALIFIED_NOTICE, signatureKinds: SIGNATURE_KINDS_EXPLANATION, config: c, language: "es" as const };
   return { ...body, hash: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
