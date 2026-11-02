@@ -14,9 +14,11 @@ import { registerAuditRoutes } from "./routes/audit-routes.js";
 import { AuditLog } from "./services/audit-log.js";
 import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
+import { registerSignPage } from "./routes/sign-page.js";
+import type { DeliveryProvider } from "./services/delivery.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[] } = {}) {
   const app = Fastify({ logger: false });
 
   const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
@@ -85,7 +87,11 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
   const consentLedger = options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
   registerConsentRoutes(app, consentLedger, disclosure, adminToken);
-  registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, adminToken);
+  registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, adminToken, {
+    publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
+    providers: options.deliveryProviders,
+  });
+  registerSignPage(app);
 
   app.get("/v1/system/status", async () => ({
     service: "easysign",

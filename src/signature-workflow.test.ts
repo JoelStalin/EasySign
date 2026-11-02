@@ -113,7 +113,7 @@ test("API: end to end with consent ledger, signer privacy, audit without tokens,
   const disclosure = buildServiceDisclosure({ providerName: "EasySign SRL", rnc: "101000019", address: "Santo Domingo", serviceDescription: "Firma electrónica", certificateFeatures: "Uso general", liabilityLimitations: "Contrato", prices: "RD$ 500", serviceLevels: "99.5 %", subscriberObligations: "Custodiar su acceso", claimsChannel: "soporte@easysign.test" }, "v1");
   const consents = new ConsentLedger();
   const audit = new AuditLog();
-  const app = buildApp({ registryAdminToken: "tok", disclosure, consentLedger: consents, auditLog: audit, workflow: new SignatureWorkflow() });
+  const app = buildApp({ registryAdminToken: "tok", disclosure, consentLedger: consents, auditLog: audit, workflow: new SignatureWorkflow(), publicBaseUrl: "https://firma.example.test" });
   const h = { authorization: "Bearer tok" };
 
   assert.equal((await buildApp({ registryAdminToken: undefined }).inject({ method: "POST", url: "/v1/signature-workflows", payload: input() })).statusCode, 503);
