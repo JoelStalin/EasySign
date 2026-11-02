@@ -4,7 +4,7 @@ import type { AuditLog } from "../services/audit-log.js";
 
 const CORRELATION = /^[A-Za-z0-9._-]{8,80}$/;
 /** Mutating requests on these prefixes are always audited, including denied ones. */
-const AUDITED = ["/v1/registry/", "/v1/consents", "/v1/audit/export"];
+const AUDITED = ["/v1/registry/", "/v1/consents", "/v1/audit/export", "/v1/signature-workflows"];
 
 /**
  * Assigns a correlation ID to every request (echoed in `X-Correlation-Id`) and records mutating calls to the
@@ -28,7 +28,7 @@ export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, admin
     audit.record({
       correlationId: (request as unknown as { correlationId: string }).correlationId,
       tenantId: typeof body.tenantId === "string" && body.tenantId ? body.tenantId : "platform",
-      actor: code === 401 || code === 503 ? "anonymous" : "registry-admin",
+      actor: path.includes("/signers/") ? "signer" : code === 401 || code === 503 ? "anonymous" : "registry-admin",
       action: `${request.method} ${request.routeOptions?.url ?? path}`,
       resource: path,
       outcome: code < 400 ? "success" : code === 401 || code === 403 || code === 503 ? "denied" : "error",
