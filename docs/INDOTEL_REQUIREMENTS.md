@@ -23,6 +23,15 @@ Fuente primaria: [Resolución INDOTEL 067-2025](https://indotel.gob.do/wp-conten
 
 Consecuencia: para operar la Ruta A o la Ruta B hace falta una **sociedad** (la comunicación del proveedor incluye Registro Mercantil y certificación de la DGII de estar al día, Anexo II art. 28.1.2). Una persona física solo puede aspirar a ser **Unidad de Registro** (verificar identidad de solicitantes para una Entidad de Certificación), y aun así con autorización. Puede, por supuesto, ser **suscriptora** (titular de un certificado) o usuaria. Pendiente de confirmar con el abogado: Ley 126-02 y Reglamento 335-03 (arts. 66-67), que no se han leído en detalle y podrían añadir condiciones.
 
+### ¿Puede la plataforma llamarse distinto de la sociedad? (p. ej. GetUpSoft SRL opera "EasySign")
+La Res. 067-2025 **no menciona** nombres comerciales ni marcas: el sujeto regulado es la **persona jurídica** (sociedad), no el nombre del producto. Por tanto, una sociedad puede operar una plataforma con otro nombre, con estas condiciones que sí salen de la norma:
+- **Siempre se identifica a la sociedad:** razón social, RNC y domicilio en RD en la comunicación al INDOTEL (Anexo II art. 28.1.1) y en la información previa al suscriptor (art. 33 b). La información publicada debe decir quién presta el servicio: "Plataforma EasySign, operada por GetUpSoft SRL, RNC …".
+- **No usar la expresión "Entidad de Certificación"** ni frases similares en la marca ni en los textos mientras se sea proveedor no cualificado (art. 29.3).
+- **No inducir a error:** el nombre no debe sugerir un valor legal que no se tiene (p. ej. "firma digital certificada") en la Ruta A (art. 29.1-29.2).
+- En la Ruta B la autorización se concede a la sociedad **para servicios concretos** (art. 12.3) y se inscribe en la Lista de Servicios de Confianza (art. 18); el nombre de la plataforma debe constar en las Políticas de Certificación y en los certificados de forma coherente.
+
+Fuera de la norma (verificar con el abogado): registrar el nombre comercial y la marca ante la ONAPI y hacer una búsqueda de anterioridad, porque "EasySign" es un nombre muy común y podría chocar con marcas existentes. No se hizo esa búsqueda.
+
 ## 2. Ruta A — Proveedor de Servicios de Firma Electrónica (Anexo II, cap. III)
 
 | Req. | Obligación | Estado en EasySign |
