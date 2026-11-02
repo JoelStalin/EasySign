@@ -7,8 +7,12 @@ import { SseHub } from "./services/sse-hub.js";
 import { registerTransactionRoutes } from "./routes/transaction-routes.js";
 import { registerRegistryRoutes } from "./routes/registry-routes.js";
 import { CertificateRegistry } from "./services/certificate-registry.js";
+import { readFileSync } from "node:fs";
+import { registerConsentRoutes } from "./routes/consent-routes.js";
+import { ConsentLedger } from "./services/consent-ledger.js";
+import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure } = {}) {
   const app = Fastify({ logger: false });
 
   const queue = new QueueEngine({
@@ -49,12 +53,23 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   registerTransactionRoutes(app, { queue, sseHub, webhookDispatcher });
 
   const registry = options.registry ?? new CertificateRegistry({ filePath: process.env.EASYSIGN_REGISTRY_FILE });
-  registerRegistryRoutes(app, registry, "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN);
+  const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
+  registerRegistryRoutes(app, registry, adminToken);
+
+  const disclosureFile = process.env.EASYSIGN_DISCLOSURE_FILE;
+  const loadDisclosure = (): ServiceDisclosure | undefined => {
+    if (!disclosureFile) return undefined;
+    const d = JSON.parse(readFileSync(disclosureFile, "utf8")) as { version: string; config: Record<string, string> };
+    return buildServiceDisclosure(d.config, d.version);
+  };
+  const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
+  registerConsentRoutes(app, options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE }), disclosure, adminToken);
 
   app.get("/v1/system/status", async () => ({
     service: "easysign",
     mode: "sandbox",
     accredited: false,
+    legalNotice: NON_QUALIFIED_NOTICE,
     engine: "NodeNext-Queue-Architecture",
     dgiiComplianceReady: false,
   }));
