@@ -99,19 +99,17 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
     const attrs = (await appPool.query("SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = current_user")).rows[0];
     assert.deepEqual(attrs, { rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false });
 
-    for (const [user, why] of [[OWNER, /owns ledger_events/], [AUDITOR, /easysign_app/]] as const) {
+    const BOTH = `es_both_${id}`; // a login wrongly given both group roles would read every tenant
+    await admin.query(`CREATE ROLE ${BOTH} LOGIN PASSWORD '${password}' IN ROLE easysign_app, easysign_auditor`);
+    for (const [user, why] of [[OWNER, /owns ledger_events/], [AUDITOR, /easysign_auditor/], [BOTH, /easysign_auditor/]] as const) {
       const pool = new pg.Pool({ connectionString: urlFor(user), max: 1 });
       try {
         const unsafe = new ConsentLedger({ store: new PostgresLedgerStore(pool, CONSENT_LEDGER) });
-        if (user === OWNER) {
-          await assert.rejects(() => unsafe.grant(grantInput("tenant-a", "x")), (e: unknown) => e instanceof UnsafeDatabaseRoleError && why.test(e.message));
-          await assert.rejects(() => unsafe.history("tenant-a", "x"), UnsafeDatabaseRoleError);
-        } else {
-          // the auditor passes the attribute check but has no INSERT and no tenant policy for writing
-          await assert.rejects(() => unsafe.grant(grantInput("tenant-a", "x")), sqlState("42501"));
-        }
+        await assert.rejects(() => unsafe.grant(grantInput("tenant-a", "x")), (e: unknown) => e instanceof UnsafeDatabaseRoleError && why.test(e.message), user);
+        await assert.rejects(() => unsafe.history("tenant-a", "x"), UnsafeDatabaseRoleError);
       } finally { await pool.end(); }
     }
+    await admin.query(`DROP ROLE ${BOTH}`);
     const superPool = new pg.Pool({ connectionString: ((): string => { const u = new URL(ADMIN_URL as string); u.pathname = `/${DB}`; return u.toString(); })(), max: 1 });
     try {
       await assert.rejects(() => new PostgresLedgerStore(superPool, CONSENT_LEDGER).readAll("tenant-a"), (e: unknown) => e instanceof UnsafeDatabaseRoleError && /superuser/.test(e.message) && /BYPASSRLS/.test(e.message));
@@ -212,6 +210,11 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
     assert.equal((await owner.query("SELECT * FROM ledger_events")).rowCount, 0, "the tenant policies are granted to easysign_app only");
     await owner.query("ROLLBACK");
     await assert.rejects(() => owner.query("TRUNCATE ledger_events"), sqlState("42501"));
+
+    // Declared limit, not a guarantee: the tenant comes from a session setting, so whoever can run arbitrary SQL
+    // as the application role can name any tenant. Isolation relies on the API being the only holder of that
+    // credential and always setting the tenant from the authenticated principal.
+    assert.equal((await asApp("tenant-a", (c) => c.query("SELECT * FROM ledger_events"))).rowCount, 3);
 
     assert.deepEqual(await head(), before, "none of the attempts moved the chain");
     assert.equal(Number((await auditorPool.query("SELECT count(*) AS n FROM ledger_events")).rows[0].n), 4);

@@ -37,13 +37,14 @@ async function readHead(db: Queryable, ledger: string): Promise<Head> {
 
 /**
  * Fails unless the connected role is safe to serve tenants: not a superuser, no BYPASSRLS, not the owner of
- * `ledger_events`, no UPDATE/DELETE/TRUNCATE on it, and the table has row level security enabled and forced.
+ * `ledger_events`, not a member of `easysign_auditor`, no UPDATE/DELETE/TRUNCATE on it, and the table has row level security enabled and forced.
  */
 export async function assertSafeApplicationRole(db: Queryable): Promise<void> {
-  const r = await db.query<{ role: string; rolsuper: boolean; rolbypassrls: boolean; exists: boolean; owner: boolean; rls: boolean; forced: boolean; can_rewrite: boolean }>(`
+  const r = await db.query<{ role: string; rolsuper: boolean; rolbypassrls: boolean; exists: boolean; owner: boolean; auditor: boolean; rls: boolean; forced: boolean; can_rewrite: boolean }>(`
     SELECT current_user AS role, r.rolsuper, r.rolbypassrls,
            c.oid IS NOT NULL AS exists,
            COALESCE(pg_has_role(current_user, c.relowner, 'MEMBER'), false) AS owner,
+           COALESCE((SELECT pg_has_role(current_user, a.oid, 'MEMBER') FROM pg_roles a WHERE a.rolname = 'easysign_auditor'), false) AS auditor,
            COALESCE(c.relrowsecurity, false) AS rls, COALESCE(c.relforcerowsecurity, false) AS forced,
            COALESCE(has_table_privilege(current_user, c.oid, 'UPDATE') OR has_table_privilege(current_user, c.oid, 'DELETE') OR has_table_privilege(current_user, c.oid, 'TRUNCATE'), false) AS can_rewrite
       FROM pg_roles r LEFT JOIN pg_class c ON c.oid = to_regclass('public.ledger_events')
@@ -55,6 +56,7 @@ export async function assertSafeApplicationRole(db: Queryable): Promise<void> {
     s.rolsuper && "it is a superuser",
     s.rolbypassrls && "it has BYPASSRLS",
     s.owner && "it owns ledger_events",
+    s.auditor && "it is a member of easysign_auditor, which reads every tenant",
     s.can_rewrite && "it can UPDATE, DELETE or TRUNCATE ledger_events",
     !s.rls && "row level security is not enabled on ledger_events",
     !s.forced && "row level security is not forced on ledger_events",
@@ -153,8 +155,10 @@ export class PostgresLedgerStore<P> implements LedgerStore<P> {
  * `easysign_auditor`; under the application role it fails, because that role cannot see the whole chain.
  */
 export async function verifyFullChain<P>(db: Queryable, definition: LedgerDefinition<P>): Promise<{ ledger: string; events: number; headHash: string }> {
-  const rows = await db.query<EventRow>("SELECT seq, tenant_id, type, at, payload, prev_hash, hash FROM public.ledger_events WHERE ledger = $1 ORDER BY seq", [definition.name]);
+  // Head first, then the events up to it: the ledger is append-only, so a writer that commits in between
+  // cannot make the two reads disagree.
   const head = await readHead(db, definition.name);
+  const rows = await db.query<EventRow>("SELECT seq, tenant_id, type, at, payload, prev_hash, hash FROM public.ledger_events WHERE ledger = $1 AND seq <= $2 ORDER BY seq", [definition.name, head.seq]);
   const records = rows.rows.map((row) => toRecord(definition, row));
   assertChain(definition, records, true);
   const last = records[records.length - 1];
