@@ -134,7 +134,7 @@ test("API: end to end with consent ledger, signer privacy, audit without tokens,
 
   assert.equal((await app.inject({ method: "POST", url: `${base}/sign`, payload: { token: a.token, documentHash: DOC } })).statusCode, 409); // no consent yet
   assert.equal((await app.inject({ method: "POST", url: `${base}/consent`, payload: { token: a.token, disclosureHash: disclosure.hash } })).statusCode, 200);
-  assert.equal(consents.hasConsent("t1", a.signerId, "signature_service_terms"), true);
+  assert.equal(await consents.hasConsent("t1", a.signerId, "signature_service_terms"), true);
   assert.equal((await app.inject({ method: "POST", url: `${base}/sign`, payload: { token: a.token, documentHash: DOC } })).statusCode, 200);
 
   const next = (await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/next-tokens`, headers: h })).json().tokens;

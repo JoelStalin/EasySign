@@ -59,3 +59,12 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Fase 2 (PostgreSQL con RLS) no empezada.** Notas de diseño en `docs/HANDOFF_CLOUD.md`.
 - **Traspaso para continuar en la nube:** `docs/HANDOFF_CLOUD.md` y `CLAUDE.md` (palabra clave `RETOMAR EASYSIGN`) en la rama `feat/easysign-oidc-rbac`, que contiene todas las demás ramas.
 - **Revertir:** `git revert` de los commits de la rama; solo código nuevo de autenticación y documentación.
+
+## 2026-11-12 PostgreSQL con aislamiento por empresa: primer libro (ES-006)
+
+- **Hecho:** interfaz `LedgerStore` con almacén de archivo/memoria (formato JSONL sin cambios) y `PostgresLedgerStore` (paquete `pg`). Tabla `ledger_events` con `PRIMARY KEY (ledger, seq)`, cadena de hashes conservada y exigida por un disparador, tabla solo de inserción, RLS activado y forzado por `tenant_id` con `app.tenant_id` fijado por transacción, roles `easysign_app` (sin `BYPASSRLS`) y `easysign_auditor` (solo lectura). Migraciones versionadas en `migrations/` con `npm run migrate`; verificación de la cadena completa con `npm run ledger:verify`.
+- **Libro migrado:** consentimientos (`consent-ledger.ts`), ahora asíncrono. Se activa con `EASYSIGN_DATABASE_URL`; sin esa variable sigue en archivo o memoria. La API no arranca si el rol de la base puede saltarse el aislamiento.
+- **Pruebas:** unitarias siempre; integración contra PostgreSQL 16 real cuando hay `EASYSIGN_TEST_DATABASE_URL` (si no, se saltan). Demuestran que una empresa no lee ni escribe filas de otra ni con SQL directo bajo el rol de la aplicación. Resultados en el PR.
+- **Pendiente:** libros de auditoría, registro de certificados y solicitudes de firma (un PR por libro); importador de JSONL existente; documentos. Detalle y límites en `docs/POSTGRES_TENANCY.md`.
+- **Dependencias nuevas:** `pg` y `@types/pg`.
+- **Revertir:** quitar `EASYSIGN_DATABASE_URL` vuelve al archivo sin tocar código; `git revert` de los commits de `feat/easysign-pg-tenant-store`.

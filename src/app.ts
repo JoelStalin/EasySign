@@ -9,7 +9,9 @@ import { registerRegistryRoutes } from "./routes/registry-routes.js";
 import { CertificateRegistry } from "./services/certificate-registry.js";
 import { readFileSync } from "node:fs";
 import { registerConsentRoutes } from "./routes/consent-routes.js";
-import { ConsentLedger } from "./services/consent-ledger.js";
+import pg from "pg";
+import { CONSENT_LEDGER, ConsentLedger } from "./services/consent-ledger.js";
+import { PostgresLedgerStore } from "./storage/postgres-ledger-store.js";
 import { registerAuditRoutes } from "./routes/audit-routes.js";
 import { AuditLog } from "./services/audit-log.js";
 import { Guard, authenticatorFromEnv, type Authenticator } from "./auth/guard.js";
@@ -20,7 +22,7 @@ import type { DeliveryProvider } from "./services/delivery.js";
 import { DocumentStore } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; databaseUrl?: string; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
   const app = Fastify({ logger: false });
 
   const staticAdminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
@@ -88,7 +90,19 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
     return buildServiceDisclosure(d.config, d.version);
   };
   const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
-  const consentLedger = options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
+  // With EASYSIGN_DATABASE_URL the consent ledger lives in PostgreSQL under per-tenant row level security
+  // (docs/POSTGRES_TENANCY.md); without it, in a JSONL file or in memory as before.
+  const databaseUrl = "databaseUrl" in options ? options.databaseUrl : process.env.EASYSIGN_DATABASE_URL;
+  let consentLedger = options.consentLedger;
+  if (!consentLedger && databaseUrl) {
+    const pool = new pg.Pool({ connectionString: databaseUrl, max: Number(process.env.EASYSIGN_DATABASE_POOL_MAX ?? 10) });
+    pool.on("error", () => { /* an idle connection dropped; the next query reconnects */ });
+    const store = new PostgresLedgerStore(pool, CONSENT_LEDGER);
+    consentLedger = new ConsentLedger({ store });
+    app.addHook("onReady", async () => { await store.ready(); }); // refuse to start with a role that could bypass tenant isolation
+    app.addHook("onClose", async () => { await pool.end(); });
+  }
+  consentLedger ??= new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
   registerConsentRoutes(app, consentLedger, disclosure, guard);
   registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, guard, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
