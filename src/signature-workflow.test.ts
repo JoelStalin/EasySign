@@ -150,10 +150,10 @@ test("API: end to end with consent ledger, signer privacy, audit without tokens,
   assert.equal(evidence.request.status, "completed");
   assert.equal(evidence.chainValid, true);
 
-  const logged = JSON.stringify(audit.query());
+  const logged = JSON.stringify((await audit.query()));
   assert.ok(!logged.includes(a.token) && !logged.includes(b.token), "tokens never reach the audit ledger");
-  assert.ok(audit.query().some((e) => e.actor === "signer" && e.outcome === "success"));
-  assert.equal(audit.verifyChain(), true);
+  assert.ok((await audit.query()).some((e) => e.actor === "signer" && e.outcome === "success"));
+  assert.equal(await audit.verifyChain(), true);
 });
 
 test("API: requests cannot be sent until the service disclosure is published", async () => {

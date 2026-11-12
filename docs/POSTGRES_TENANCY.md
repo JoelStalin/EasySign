@@ -1,6 +1,6 @@
 # PostgreSQL con aislamiento por empresa (ES-006)
 
-Estado: **primer libro migrado (consentimientos)**. Los otros tres libros siguen en archivo JSONL o memoria; ver "Siguientes pasos".
+Estado: **dos libros migrados (consentimientos y auditoría)**. El registro de certificados y las solicitudes de firma siguen en archivo JSONL o memoria; ver "Siguientes pasos".
 
 ## Qué hay
 
@@ -12,6 +12,7 @@ Estado: **primer libro migrado (consentimientos)**. Los otros tres libros siguen
 | Migraciones | `migrations/NNN_nombre.sql`, `src/storage/migrate.ts` | Versionadas, una transacción por archivo, registradas en `schema_migrations` con su SHA-256. |
 | Comandos | `npm run migrate`, `npm run ledger:verify` | Aplicar migraciones y verificar la cadena completa. |
 | Libro de consentimientos | `src/services/consent-ledger.ts` | Ahora es asíncrono y usa un `LedgerStore`. |
+| Libro de auditoría | `src/services/audit-log.ts` | Ídem. Las líneas JSONL conservan sus campos de siempre. |
 
 ## Modelo de datos
 
@@ -40,6 +41,14 @@ ledger_heads(ledger text PRIMARY KEY, last_seq bigint, last_hash text)
 
 Solo lo que revela `ledger_heads`: cuántos eventos tiene el libro en total y el hash del último. También puede deducir, por los saltos en sus propios `seq`, que hubo actividad ajena. No puede saber de quién, ni el contenido. Es el precio de mantener una sola cadena; si se quiere eliminar, la alternativa es una cadena por empresa (cambia la fórmula de `seq` y el formato de evidencia, por eso no se hizo aquí).
 
+## Libro de auditoría sobre PostgreSQL
+
+- Los eventos de plataforma (trabajos de la cola sin empresa, peticiones sin empresa) se guardan con `tenant_id = 'platform'`, que para el RLS es una empresa más.
+- **Con PostgreSQL toda lectura necesita empresa.** `GET /v1/audit/events` sin `tenantId` responde `400 TENANT_REQUIRED`, también para `platform_admin`. Con archivo o memoria sigue devolviendo todas las empresas, como antes. La revisión de todas las empresas a la vez se hace con el rol auditor, fuera de la API.
+- `details` es un objeto libre. Antes de calcular el hash se ordenan sus claves en todos los niveles y se quitan los caracteres NUL, porque `jsonb` no conserva el orden ni admite NUL. En archivo se mantiene el orden original.
+- El paquete de evidencia (`POST /v1/audit/export`) sigue anclado al hash de la cabeza del libro entero, que ahora sale de `ledger_heads`. Si la cadena de esa empresa está alterada, el paquete sale con `chainValid: false` y sin eventos.
+- El registro de cada petición se escribe después de enviar la respuesta. Si la base falla en ese momento, la petición ya respondió y el evento se pierde sin aviso al cliente. Conviene vigilar los errores de conexión de la API.
+
 ## Verificación de la cadena
 
 - **Al leer** (`readAll`, que usan todas las consultas del libro): se recalcula el hash de cada evento visible, se exige orden creciente, se comprueba el enlace entre eventos consecutivos visibles y que el último no contradiga la cabeza. Si algo no cuadra, `LedgerChainError` → `ConsentError CHAIN_BROKEN` (HTTP 500).
@@ -67,7 +76,7 @@ CREATE ROLE easysign_audit LOGIN PASSWORD '...' IN ROLE easysign_auditor;
 
 | Variable | Rol | Uso |
 |---|---|---|
-| `EASYSIGN_DATABASE_URL` | `easysign_api` | La API. Si falta, el libro usa `EASYSIGN_CONSENT_FILE` o memoria, como hasta ahora. Si está, **tiene prioridad** sobre el archivo. |
+| `EASYSIGN_DATABASE_URL` | `easysign_api` | La API. Si falta, los libros usan `EASYSIGN_CONSENT_FILE` y `EASYSIGN_AUDIT_FILE` o memoria, como hasta ahora. Si está, **tiene prioridad** sobre los archivos. |
 | `EASYSIGN_DATABASE_POOL_MAX` | | Conexiones del pool (10 por defecto). |
 | `EASYSIGN_MIGRATION_DATABASE_URL` | `easysign_owner` | Solo `npm run migrate`. |
 | `EASYSIGN_AUDIT_DATABASE_URL` | `easysign_audit` | Solo `npm run ledger:verify`. |
@@ -75,7 +84,7 @@ CREATE ROLE easysign_audit LOGIN PASSWORD '...' IN ROLE easysign_auditor;
 
 Una migración ya aplicada no se edita: el ejecutor compara el SHA-256 y se detiene. Los cambios van en un archivo nuevo con el número siguiente.
 
-**No hay importación automática del JSONL.** Si ya existe un `consents.jsonl` con datos, hay que cargarlo antes de activar la base (pendiente, ver abajo); mientras tanto no se deben activar las dos cosas a la vez esperando que se fusionen.
+**No hay importación automática del JSONL.** Si ya existe un `consents.jsonl` o un `audit.jsonl` con datos, hay que cargarlo antes de activar la base (pendiente, ver abajo); mientras tanto no se deben activar las dos cosas a la vez esperando que se fusionen.
 
 ## Pruebas
 
@@ -100,7 +109,7 @@ Lo que demuestran, con SQL directo bajo el rol de la aplicación:
 
 ## Límites declarados
 
-- Solo el libro de consentimientos usa PostgreSQL. Auditoría, registro de certificados y solicitudes de firma siguen en JSONL o memoria.
+- Solo los libros de consentimientos y auditoría usan PostgreSQL. El registro de certificados y las solicitudes de firma siguen en JSONL o memoria.
 - Cada consulta del libro lee todos los eventos de esa empresa y los verifica. Es correcto con varias instancias y suficiente para el volumen actual; con mucho volumen hará falta una proyección (tabla de estado vigente) o verificación incremental.
 - `withdraw` consulta y luego inserta en transacciones distintas: dos retiros simultáneos del mismo consentimiento pueden dejar dos eventos `withdrawn`. El estado resultante es el mismo (sin consentimiento).
 - En el flujo de firma, la aceptación se registra primero en el libro de solicitudes (todavía en memoria/archivo) y después en el de consentimientos. Si la base falla en medio, la petición responde 500 y queda el primer registro sin el segundo. Se resuelve cuando ambos libros estén en la misma base y transacción.
@@ -111,7 +120,7 @@ Lo que demuestran, con SQL directo bajo el rol de la aplicación:
 
 ## Siguientes pasos (un PR por libro)
 
-1. **Auditoría** (`audit-log.ts`). Puntos a decidir: los eventos de plataforma usan `tenantId = "platform"`; `platform_admin` consulta todas las empresas (necesita una vía con rol auditor); `exportEvidence` ancla el paquete en la cabeza del libro (ya disponible en `ledger_heads`); el `onResponse` que registra debe esperar la escritura sin romper la respuesta.
+1. **Auditoría: hecha.** Queda decidir si `platform_admin` necesita una consulta de todas las empresas dentro de la API (hoy no la tiene con PostgreSQL).
 2. **Registro de certificados** (`certificate-registry.ts`). La consulta pública de estado no lleva empresa: necesita una política de lectura propia o una vista publicada.
 3. **Solicitudes de firma** (`signature-workflow.ts`). El firmante entra con un token, sin identidad de empresa: la búsqueda por id de solicitud tiene que resolver la empresa antes de fijar `app.tenant_id` (función `SECURITY DEFINER` acotada o tabla índice id → empresa).
 4. Importador de JSONL existente a PostgreSQL, conservando `seq` y hashes.

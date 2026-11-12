@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { FileLedgerStore, LedgerChainError, type LedgerDefinition, type LedgerRecord, type LedgerStore } from "../storage/ledger-store.js";
 
 /**
  * Audit and evidence ledger (Res. INDOTEL 067-2025 Annex I art. 36.2 j: keep relevant records as legal evidence;
  * backlog ES-007). Append-only, SHA-256 hash-chained, with correlation IDs. Secrets are redacted before storage.
+ * Events are kept in a LedgerStore: memory or a JSONL file by default, PostgreSQL with per-tenant row level
+ * security when one is given (docs/POSTGRES_TENANCY.md).
  */
 
 export interface AuditEvent {
@@ -23,14 +24,16 @@ export interface AuditEvent {
 
 export type AuditInput = Omit<AuditEvent, "seq" | "at" | "prevHash" | "hash" | "details"> & { details?: Record<string, unknown> };
 
+/** What an audit event stores besides the ledger envelope (seq, at, tenantId, hashes). */
+export type AuditPayload = Pick<AuditEvent, "correlationId" | "actor" | "action" | "resource" | "outcome" | "details">;
+
 export class AuditError extends Error {
-  constructor(public readonly code: "CHAIN_BROKEN" | "INVALID_INPUT", message: string) {
+  constructor(public readonly code: "CHAIN_BROKEN" | "INVALID_INPUT" | "TENANT_REQUIRED", message: string) {
     super(message);
     this.name = "AuditError";
   }
 }
 
-const GENESIS = "0".repeat(64);
 const SECRET_KEY = /pass(word|phrase)?|secret|token|authorization|private|p12|pfx|api[-_]?key|otp|cookie/i;
 const MAX_STRING = 500;
 
@@ -44,8 +47,35 @@ export function redact(value: unknown, depth = 0): unknown {
   return typeof value === "string" && value.length > MAX_STRING ? value.slice(0, MAX_STRING) + "…[TRUNCATED]" : value;
 }
 
-const hashOf = (e: Omit<AuditEvent, "hash">) =>
-  createHash("sha256").update(JSON.stringify([e.seq, e.at, e.correlationId, e.tenantId, e.actor, e.action, e.resource, e.outcome, e.details, e.prevHash])).digest("hex");
+/** Keys sorted at every level and NUL characters removed: the only form that survives PostgreSQL `jsonb` unchanged. */
+function sorted(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(o).sort().map((k) => [k.replaceAll("\u0000", ""), sorted(o[k])]));
+  }
+  return typeof value === "string" ? value.replaceAll("\u0000", "") : value;
+}
+
+export const AUDIT_LEDGER: LedgerDefinition<AuditPayload> = {
+  name: "audit",
+  fixedType: "audit", // audit events have no type of their own; JSONL lines keep the original shape without it
+  hash: (r) => createHash("sha256").update(JSON.stringify([r.seq, r.at, r.payload.correlationId, r.tenantId, r.payload.actor, r.payload.action, r.payload.resource, r.payload.outcome, r.payload.details, r.prevHash])).digest("hex"),
+  canonical: (p) => {
+    const x = p as unknown as AuditPayload;
+    return { correlationId: x.correlationId, actor: x.actor, action: x.action, resource: x.resource, outcome: x.outcome, details: sorted(x.details ?? {}) as Record<string, unknown> };
+  },
+};
+
+const toEvent = (r: LedgerRecord<AuditPayload>): AuditEvent => ({
+  seq: r.seq, at: r.at, correlationId: r.payload.correlationId, tenantId: r.tenantId, actor: r.payload.actor, action: r.payload.action,
+  resource: r.payload.resource, outcome: r.payload.outcome, details: r.payload.details, prevHash: r.prevHash, hash: r.hash,
+});
+
+const chainBroken = (e: unknown): never => {
+  if (e instanceof LedgerChainError) throw new AuditError("CHAIN_BROKEN", `Audit event ${e.seq} does not match the hash chain: the ledger was altered.`);
+  throw e;
+};
 
 export interface EvidencePackage {
   generatedAt: string;
@@ -57,54 +87,66 @@ export interface EvidencePackage {
   events: AuditEvent[];
 }
 
-export class AuditLog {
-  private readonly events: AuditEvent[] = [];
-  private readonly now: () => Date;
-  private readonly filePath?: string;
+export interface AuditFilter { tenantId?: string; action?: string; correlationId?: string; from?: string; to?: string; limit?: number }
 
-  constructor(options: { filePath?: string; now?: () => Date } = {}) {
+export class AuditLog {
+  private readonly store: LedgerStore<AuditPayload>;
+  private readonly now: () => Date;
+
+  /** With `store` the ledger uses it; otherwise a JSONL file (`filePath`) or memory. A tampered file throws here. */
+  constructor(options: { filePath?: string; store?: LedgerStore<AuditPayload>; now?: () => Date } = {}) {
     this.now = options.now ?? (() => new Date());
-    this.filePath = options.filePath;
-    if (this.filePath) {
-      const dir = dirname(this.filePath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      if (existsSync(this.filePath)) {
-        for (const line of readFileSync(this.filePath, "utf8").split("\n").filter(Boolean)) {
-          const e = JSON.parse(line) as AuditEvent;
-          const prev = this.events[this.events.length - 1];
-          if (e.seq !== this.events.length + 1 || e.prevHash !== (prev?.hash ?? GENESIS) || e.hash !== hashOf(e)) {
-            throw new AuditError("CHAIN_BROKEN", `Audit event ${e.seq} does not match the hash chain: the ledger was altered.`);
-          }
-          this.events.push(e);
-        }
-      }
+    try {
+      this.store = options.store ?? new FileLedgerStore(AUDIT_LEDGER, { filePath: options.filePath });
+    } catch (e) {
+      throw chainBroken(e);
     }
   }
 
-  public record(input: AuditInput): AuditEvent {
+  public async record(input: AuditInput): Promise<AuditEvent> {
     if (!input.correlationId || !input.tenantId || !input.actor || !input.action) throw new AuditError("INVALID_INPUT", "correlationId, tenantId, actor and action are required.");
-    const prev = this.events[this.events.length - 1];
-    const core = { ...input, details: redact(input.details ?? {}) as Record<string, unknown>, seq: this.events.length + 1, at: this.now().toISOString(), prevHash: prev?.hash ?? GENESIS };
-    const e: AuditEvent = { ...core, hash: hashOf(core) };
-    if (this.filePath) appendFileSync(this.filePath, JSON.stringify(e) + "\n");
-    this.events.push(e);
-    return e;
+    const payload: AuditPayload = { correlationId: input.correlationId, actor: input.actor, action: input.action, resource: input.resource, outcome: input.outcome, details: redact(input.details ?? {}) as Record<string, unknown> };
+    return toEvent(await this.store.append(input.tenantId, { type: "audit", at: this.now().toISOString(), payload }));
   }
 
-  public query(filter: { tenantId?: string; action?: string; correlationId?: string; from?: string; to?: string; limit?: number } = {}): AuditEvent[] {
-    return this.events
-      .filter((e) => (!filter.tenantId || e.tenantId === filter.tenantId) && (!filter.action || e.action === filter.action) && (!filter.correlationId || e.correlationId === filter.correlationId)
+  /**
+   * Events of one tenant, or of every tenant when no tenant is given. On PostgreSQL the application role only ever
+   * sees one tenant, so a query without tenant is refused there (TENANT_REQUIRED).
+   */
+  public async query(filter: AuditFilter = {}): Promise<AuditEvent[]> {
+    let records: LedgerRecord<AuditPayload>[];
+    try {
+      if (filter.tenantId) records = await this.store.readAll(filter.tenantId);
+      else if (this.store.readEverything) records = await this.store.readEverything();
+      else throw new AuditError("TENANT_REQUIRED", "This audit ledger is isolated per tenant: a tenantId is required to read it.");
+    } catch (e) {
+      throw chainBroken(e);
+    }
+    return records.map(toEvent)
+      .filter((e) => (!filter.action || e.action === filter.action) && (!filter.correlationId || e.correlationId === filter.correlationId)
         && (!filter.from || e.at >= filter.from) && (!filter.to || e.at <= filter.to))
       .slice(-Math.min(1000, filter.limit ?? 200));
   }
 
-  public verifyChain(): boolean {
-    let prev = GENESIS;
-    return this.events.every((e, i) => { const ok = e.seq === i + 1 && e.prevHash === prev && e.hash === hashOf(e); prev = e.hash; return ok; });
+  /**
+   * File or memory: verifies the whole chain. PostgreSQL: needs the tenant and verifies what that tenant can see;
+   * the whole chain is verified with the auditor role (`npm run ledger:verify`).
+   */
+  public async verifyChain(tenantId?: string): Promise<boolean> {
+    if (!tenantId && !this.store.readEverything) throw new AuditError("TENANT_REQUIRED", "This audit ledger is isolated per tenant: a tenantId is required to verify it.");
+    return this.store.verify(tenantId);
   }
 
-  public exportEvidence(tenantId: string): EvidencePackage {
-    const events = this.events.filter((e) => e.tenantId === tenantId);
-    return { generatedAt: this.now().toISOString(), tenantId, eventCount: events.length, headHash: this.events[this.events.length - 1]?.hash ?? GENESIS, chainValid: this.verifyChain(), events };
+  public async exportEvidence(tenantId: string): Promise<EvidencePackage> {
+    let chainValid = true;
+    let events: AuditEvent[] = [];
+    try {
+      events = (await this.store.readAll(tenantId)).map(toEvent);
+      chainValid = await this.store.verify(tenantId);
+    } catch (e) {
+      if (!(e instanceof LedgerChainError)) throw e;
+      chainValid = false; // an altered ledger is reported, never exported as if it were sound
+    }
+    return { generatedAt: this.now().toISOString(), tenantId, eventCount: events.length, headHash: (await this.store.head()).hash, chainValid, events };
   }
 }

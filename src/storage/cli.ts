@@ -1,4 +1,5 @@
 import pg from "pg";
+import { AUDIT_LEDGER } from "../services/audit-log.js";
 import { CONSENT_LEDGER } from "../services/consent-ledger.js";
 import { runMigrations } from "./migrate.js";
 import { verifyFullChain } from "./postgres-ledger-store.js";
@@ -9,7 +10,8 @@ import { verifyFullChain } from "./postgres-ledger-store.js";
  *   node dist/storage/cli.js verify    uses EASYSIGN_AUDIT_DATABASE_URL (member of easysign_auditor)
  * Neither uses the application URL: the API role cannot change the schema nor read every tenant.
  */
-const LEDGERS = [CONSENT_LEDGER];
+/** One verification per ledger that lives in PostgreSQL. */
+const VERIFIERS = [(db: pg.Client) => verifyFullChain(db, CONSENT_LEDGER), (db: pg.Client) => verifyFullChain(db, AUDIT_LEDGER)];
 
 async function main(): Promise<void> {
   const command = process.argv[2];
@@ -24,8 +26,8 @@ async function main(): Promise<void> {
       const applied = await runMigrations(client);
       console.log(applied.length ? `Applied migrations: ${applied.join(", ")}` : "Nothing to apply: the schema is up to date.");
     } else {
-      for (const ledger of LEDGERS) {
-        const r = await verifyFullChain(client, ledger);
+      for (const verify of VERIFIERS) {
+        const r = await verify(client);
         console.log(`Ledger "${r.ledger}": ${r.events} events, chain valid, head ${r.headHash}`);
       }
     }

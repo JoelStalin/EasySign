@@ -144,6 +144,12 @@ export class PostgresLedgerStore<P> implements LedgerStore<P> {
     });
   }
 
+  /** The head has no tenant data (a counter and a hash), so it needs no tenant. */
+  public async head(): Promise<{ seq: number; hash: string }> {
+    await this.ready();
+    return readHead(this.pool, this.definition.name);
+  }
+
   public async verify(tenantId?: string): Promise<boolean> {
     if (!tenantId) throw new Error("The application role only sees one tenant at a time: pass a tenantId, or verify the whole chain with verifyFullChain under the easysign_auditor role.");
     try { await this.readAll(tenantId); return true; } catch (e) { if (e instanceof LedgerChainError) return false; throw e; }

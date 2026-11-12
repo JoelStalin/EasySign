@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { buildApp } from "./app.js";
+import { AUDIT_LEDGER, AuditError, AuditLog } from "./services/audit-log.js";
 import { CONSENT_LEDGER, ConsentError, ConsentLedger } from "./services/consent-ledger.js";
 import { GENESIS, LedgerChainError } from "./storage/ledger-store.js";
 import { DEFAULT_MIGRATIONS_DIR, runMigrations } from "./storage/migrate.js";
@@ -144,7 +145,7 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
   });
 
   test("direct SQL under the application role cannot read another tenant's rows", async () => {
-    const total = Number((await auditorPool.query("SELECT count(*) AS n FROM ledger_events")).rows[0].n);
+    const total = Number((await auditorPool.query("SELECT count(*) AS n FROM ledger_events WHERE ledger = 'consent'")).rows[0].n);
     assert.equal(total, 4);
 
     // no tenant in the transaction: nothing is visible
@@ -217,7 +218,7 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
     assert.equal((await asApp("tenant-a", (c) => c.query("SELECT * FROM ledger_events"))).rowCount, 3);
 
     assert.deepEqual(await head(), before, "none of the attempts moved the chain");
-    assert.equal(Number((await auditorPool.query("SELECT count(*) AS n FROM ledger_events")).rows[0].n), 4);
+    assert.equal(Number((await auditorPool.query("SELECT count(*) AS n FROM ledger_events WHERE ledger = 'consent'")).rows[0].n), 4);
   });
 
   test("concurrent writers from several tenants and several ledger instances keep one unbroken chain", async () => {
@@ -258,11 +259,61 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
       // a second instance (another process or a restart) sees the same state
       assert.equal(await ledger.hasConsent("tenant-http", "s1", "marketing"), false);
       assert.equal((await ledger.history("tenant-http", "s1")).length, 2);
+
+      // the same requests were audited in PostgreSQL (written after the response, so wait for them)
+      const audit = new AuditLog({ store: new PostgresLedgerStore(appPool, AUDIT_LEDGER) });
+      let audited = await audit.query({ tenantId: "tenant-http" });
+      for (let i = 0; i < 50 && audited.length < 2; i++) { await new Promise((r) => setTimeout(r, 100)); audited = await audit.query({ tenantId: "tenant-http" }); }
+      assert.deepEqual(audited.map((e) => [e.action, e.outcome]), [["POST /v1/consents", "success"], ["POST /v1/consents/withdraw", "success"]]);
+      assert.deepEqual(audited[0].details, { statusCode: 201, targetTenant: "tenant-http" });
+      const viaApi = (await app.inject({ method: "GET", url: "/v1/audit/events?tenantId=tenant-http", headers: h })).json();
+      assert.equal(viaApi.chainValid, true);
+      assert.deepEqual(viaApi.events, audited);
+      const noTenant = await app.inject({ method: "GET", url: "/v1/audit/events", headers: h });
+      assert.equal(noTenant.statusCode, 400);
+      assert.equal(noTenant.json().error, "TENANT_REQUIRED");
+      const exported = (await app.inject({ method: "POST", url: "/v1/audit/export", headers: h, payload: { tenantId: "tenant-http" } })).json();
+      assert.equal(exported.chainValid, true);
+      assert.ok(exported.events.length >= 2 && exported.events.every((e: { tenantId: string }) => e.tenantId === "tenant-http"));
+      await new Promise((r) => setTimeout(r, 300)); // let the audit of that export be written before the pool closes
     } finally { await app.close(); }
 
     const unsafe = buildApp({ registryAdminToken: "tok", disclosure: undefined, databaseUrl: urlFor(OWNER) });
     await assert.rejects(async () => { await unsafe.ready(); }, UnsafeDatabaseRoleError);
     await unsafe.close();
+  });
+
+  test("the audit ledger on PostgreSQL: per-tenant reads, platform events, evidence export and its own chain", async () => {
+    const audit = new AuditLog({ store: new PostgresLedgerStore(appPool, AUDIT_LEDGER) });
+    const base = { correlationId: "corr-00000001", actor: "alice", action: "POST /x", resource: "/x", outcome: "success" as const };
+    const a = await audit.record({ ...base, tenantId: "tenant-a", details: { zeta: 1, alpha: { nested: [{ b: 2, a: "x" }] }, password: "hunter2" } });
+    assert.equal(a.details.password, "[REDACTED]");
+    await audit.record({ ...base, tenantId: "tenant-b", actor: "bob" });
+    const p = await audit.record({ ...base, tenantId: "platform", actor: "queue-worker" });
+
+    const mine = await audit.query({ tenantId: "tenant-a" });
+    assert.deepEqual(mine, [a], "arbitrary details survive jsonb and still match the hash");
+    assert.deepEqual((await audit.query({ tenantId: "tenant-b" })).map((e) => e.actor), ["bob"]);
+    assert.deepEqual((await audit.query({ tenantId: "platform" })).map((e) => e.actor), ["queue-worker"]);
+    assert.deepEqual(await audit.query({ tenantId: "tenant-a", action: "nope" }), []);
+    await assert.rejects(() => audit.query(), (e: unknown) => e instanceof AuditError && e.code === "TENANT_REQUIRED");
+    await assert.rejects(() => audit.verifyChain(), (e: unknown) => e instanceof AuditError && e.code === "TENANT_REQUIRED");
+    assert.equal(await audit.verifyChain("tenant-a"), true);
+
+    const pkg = await audit.exportEvidence("tenant-a");
+    assert.equal(pkg.chainValid, true);
+    assert.deepEqual(pkg.events, [a]);
+    assert.equal(pkg.headHash, p.hash, "anchored to the head of the whole ledger, which carries no tenant data");
+
+    // direct SQL: tenant-b cannot see tenant-a's or the platform's audit rows
+    await asApp("tenant-b", async (c) => {
+      assert.deepEqual((await c.query("SELECT DISTINCT tenant_id FROM ledger_events WHERE ledger = 'audit'")).rows, [{ tenant_id: "tenant-b" }]);
+      assert.equal((await c.query("SELECT * FROM ledger_events WHERE payload->>'actor' IN ('alice', 'queue-worker')")).rowCount, 0);
+    });
+    // the two ledgers are separate chains in the same table
+    const full = await verifyFullChain(auditorPool, AUDIT_LEDGER);
+    assert.ok(full.events >= 3);
+    assert.equal((await verifyFullChain(auditorPool, CONSENT_LEDGER)).ledger, "consent");
   });
 
   test("tampering done with superuser rights is detected when the ledger is read", async () => {
@@ -282,5 +333,21 @@ describe("PostgreSQL ledger with per-tenant row level security", { skip: ADMIN_U
     assert.equal(await ledger.verifyChain("tenant-a"), false);
     assert.equal(await ledger.verifyChain("tenant-b"), true, "other tenants are unaffected and learn nothing about it");
     await assert.rejects(() => verifyFullChain(auditorPool, CONSENT_LEDGER), (e: unknown) => e instanceof LedgerChainError && e.seq === 4);
+
+    // an altered audit event is reported in the evidence package instead of being exported as sound
+    const audit = new AuditLog({ store: new PostgresLedgerStore(appPool, AUDIT_LEDGER) });
+    const su2 = new pg.Client({ connectionString: ((): string => { const u = new URL(ADMIN_URL as string); u.pathname = `/${DB}`; return u.toString(); })() });
+    await su2.connect();
+    try {
+      await su2.query("BEGIN");
+      await su2.query("SET LOCAL session_replication_role = replica");
+      await su2.query("UPDATE ledger_events SET payload = jsonb_set(payload, '{actor}', '\"mallory\"') WHERE ledger = 'audit' AND tenant_id = 'tenant-b'");
+      await su2.query("COMMIT");
+    } finally { await su2.end(); }
+    await assert.rejects(() => audit.query({ tenantId: "tenant-b" }), (e: unknown) => e instanceof AuditError && e.code === "CHAIN_BROKEN");
+    const bad = await audit.exportEvidence("tenant-b");
+    assert.equal(bad.chainValid, false);
+    assert.deepEqual(bad.events, []);
+    assert.equal((await audit.exportEvidence("tenant-a")).chainValid, true);
   });
 });

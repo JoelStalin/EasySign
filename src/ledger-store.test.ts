@@ -32,6 +32,9 @@ test("a ledger keeps one chain across tenants and only returns the asked tenant'
   assert.deepEqual((await s.readAll("b")).map((r) => r.payload.text), ["two"]);
   assert.deepEqual(await s.readAll("c"), []);
   assert.equal(await s.verify(), true);
+  assert.deepEqual(await s.head(), { seq: 3, hash: a2.hash });
+  assert.deepEqual((await s.readEverything()).map((r) => r.seq), [1, 2, 3]);
+  assert.deepEqual(await new FileLedgerStore(NOTES).head(), { seq: 0, hash: GENESIS });
   await assert.rejects(() => s.append("", { type: "note", at: AT, payload: { text: "x" } }), /tenantId is required/);
   await assert.rejects(() => s.append("a", { type: "note", at: AT, payload: { text: "x", seq: 9 } as Note }), /reserved/);
 });
@@ -96,7 +99,7 @@ test("the consent hash survives a jsonb round trip, which reorders keys", () => 
 
 test("a broken store surfaces as CHAIN_BROKEN from the consent ledger", async () => {
   const boom = new LedgerChainError("consent", 3, "altered");
-  const ledger = new ConsentLedger({ store: { kind: "postgres", append: async () => { throw new Error("unused"); }, readAll: async () => { throw boom; }, verify: async () => false } });
+  const ledger = new ConsentLedger({ store: { kind: "postgres", append: async () => { throw new Error("unused"); }, readAll: async () => { throw boom; }, verify: async () => false, head: async () => ({ seq: 3, hash: GENESIS }) } });
   await assert.rejects(() => ledger.hasConsent("t1", "s1", "marketing"), (e: unknown) => e instanceof ConsentError && e.code === "CHAIN_BROKEN");
   await assert.rejects(() => ledger.history("t1", "s1"), (e: unknown) => e instanceof ConsentError && e.code === "CHAIN_BROKEN");
   assert.equal(await ledger.verifyChain("t1"), false);

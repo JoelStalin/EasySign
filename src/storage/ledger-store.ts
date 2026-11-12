@@ -30,6 +30,8 @@ export interface LedgerDraft<P> {
 export interface LedgerDefinition<P> {
   /** Lowercase identifier, also the value of the `ledger` column. */
   name: string;
+  /** For ledgers whose events have no type of their own: JSONL lines omit the type and it is filled in on load. */
+  fixedType?: string;
   hash(record: Omit<LedgerRecord<P>, "hash">): string;
   /**
    * Rebuilds a payload with its keys in the order the hash expects. PostgreSQL `jsonb` does not keep key order,
@@ -56,6 +58,10 @@ export interface LedgerStore<P> {
    * cannot do under the application role (use `verifyFullChain` with the auditor role).
    */
   verify(tenantId?: string): Promise<boolean>;
+  /** Sequence number and hash of the last event of the whole ledger (0 and the genesis hash when empty). */
+  head(): Promise<{ seq: number; hash: string }>;
+  /** Every event of every tenant. Only stores that hold the whole chain have it; the PostgreSQL store does not. */
+  readEverything?(): Promise<LedgerRecord<P>[]>;
 }
 
 /**
@@ -101,7 +107,7 @@ export class FileLedgerStore<P extends object> implements LedgerStore<P> {
     if (!existsSync(this.filePath)) return;
     for (const line of readFileSync(this.filePath, "utf8").split("\n").filter(Boolean)) {
       const { seq, type, at, tenantId, prevHash, hash, ...payload } = JSON.parse(line) as Record<string, unknown>;
-      this.records.push({ seq, type, at, tenantId, payload, prevHash, hash } as LedgerRecord<P>);
+      this.records.push({ seq, type: type ?? this.definition.fixedType, at, tenantId, payload, prevHash, hash } as LedgerRecord<P>);
     }
     assertChain(this.definition, this.records, true);
   }
@@ -114,8 +120,9 @@ export class FileLedgerStore<P extends object> implements LedgerStore<P> {
     const core = { seq: this.records.length + 1, type: draft.type, at: draft.at, tenantId, payload: draft.payload, prevHash: prev?.hash ?? GENESIS };
     const record: LedgerRecord<P> = { ...core, hash: this.definition.hash(core) };
     if (this.filePath) {
-      const { payload, prevHash, hash, ...head } = record;
-      appendFileSync(this.filePath, JSON.stringify({ ...head, ...payload, prevHash, hash }) + "\n");
+      const { payload, prevHash, hash, type, ...head } = record;
+      const envelope = this.definition.fixedType ? head : { seq: head.seq, type, at: head.at, tenantId: head.tenantId };
+      appendFileSync(this.filePath, JSON.stringify({ ...envelope, ...payload, prevHash, hash }) + "\n");
     }
     this.records.push(record);
     return record;
@@ -123,6 +130,15 @@ export class FileLedgerStore<P extends object> implements LedgerStore<P> {
 
   public async readAll(tenantId: string): Promise<LedgerRecord<P>[]> {
     return this.records.filter((r) => r.tenantId === tenantId);
+  }
+
+  public async readEverything(): Promise<LedgerRecord<P>[]> {
+    return [...this.records];
+  }
+
+  public async head(): Promise<{ seq: number; hash: string }> {
+    const last = this.records[this.records.length - 1];
+    return { seq: last?.seq ?? 0, hash: last?.hash ?? GENESIS };
   }
 
   /** The file store always holds the whole chain, so it verifies all of it whatever the tenant. */
