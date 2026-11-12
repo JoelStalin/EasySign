@@ -13,7 +13,7 @@ Decisión del dueño del producto (2026-11-02): operar primero como **Proveedor 
 | Libro de auditoría y evidencia (PR #14) | Hecho, sin fusionar |
 | Verificación real y auditoría de firma (PR #15) | Hecho, sin fusionar |
 | **Flujo de solicitudes de firma con firmantes, consentimiento y evidencia** | Hecho en este PR |
-| Envío de enlaces por correo/WhatsApp (ES-013) | Pendiente: requiere proveedor (WhatsApp Business, correo) |
+| Envío de enlaces por correo/WhatsApp (ES-013) | Correo: hecho con Cloudflare Email Sending, apagado por defecto (`docs/EMAIL_AND_OTP.md`). WhatsApp: pendiente, requiere que el dueño contrate proveedor |
 | Sellado de documento (PDF/XML firmado con el sello de EasySign, PAdES/XAdES básico) | Pendiente |
 | Identidad del firmante (OTP por correo/teléfono) | Pendiente |
 | OIDC/RBAC y PostgreSQL con aislamiento por empresa (ES-005/006) | Pendiente (bloque grande) |

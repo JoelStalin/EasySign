@@ -59,3 +59,11 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Fase 2 (PostgreSQL con RLS) no empezada.** Notas de diseño en `docs/HANDOFF_CLOUD.md`.
 - **Traspaso para continuar en la nube:** `docs/HANDOFF_CLOUD.md` y `CLAUDE.md` (palabra clave `RETOMAR EASYSIGN`) en la rama `feat/easysign-oidc-rbac`, que contiene todas las demás ramas.
 - **Revertir:** `git revert` de los commits de la rama; solo código nuevo de autenticación y documentación.
+
+## 2026-11-12 Correo por Cloudflare y código de verificación del firmante (ES-013 parcial)
+
+- **Hecho** en la rama `feat/easysign-email-otp` (base `feat/easysign-oidc-rbac`, PR sin fusionar): interfaz `MailProvider` con `CloudflareEmailProvider` (API REST de Email Sending, remitente como `from.address`, tiempos de espera y reintentos acotados, el token nunca se registra) y `NoopMailProvider` (comportamiento anterior: devuelve el enlace). Plantillas en español para el enlace de firma y para el código. Código de un solo uso del firmante, opcional por solicitud (`requireOtp`): 6 dígitos, 10 minutos, 5 intentos, límite de reenvío, solo hash con sal en memoria; sin verificarlo no se puede firmar. Rutas `otp/request` y `otp/verify`, paso nuevo en la página de firma y eventos en el libro de la solicitud y en el de auditoría, sin el código.
+- **Pruebas:** `rm -rf dist && npm ci && npm run build && npm test` → 90/90 (66 anteriores + 24 nuevas). El proveedor se prueba contra un servidor HTTP falso local; no se envió ningún correo real ni se usó ningún token real.
+- **Límites declarados:** el código prueba control del correo, no identidad civil; KYC sigue pendiente. WhatsApp queda solo como interfaz (`MessagingProvider` sin implementación real). La página de firma con el paso del código no se probó en navegador. Los códigos viven en memoria de un proceso.
+- **Pendiente del dueño:** dar de alta el dominio remitente en Cloudflare Email Sending, crear un token con permiso Email Sending: Edit y cargar las variables en el servidor por GitHub Actions; elegir y contratar proveedor de WhatsApp; decidir el proveedor de KYC. Detalle en `docs/EMAIL_AND_OTP.md`.
+- **Revertir:** `git revert` de los commits de la rama. Sin `requireOtp` y sin `EASYSIGN_MAIL_PROVIDER`, el comportamiento es el anterior.
