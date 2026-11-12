@@ -38,7 +38,7 @@ Plataforma de firma electrónica (Node 22, TypeScript NodeNext, Fastify 5, Zod).
 | #19 | `docs/easysign-change-timeline` | `CHANGE_TIMELINE.md` |
 | #20 | `feat/easysign-platform-name` | Campo opcional `platformName` en el aviso previo |
 | (nuevo) | `feat/easysign-oidc-rbac` | **OIDC + roles + aislamiento por empresa** (este traspaso va en esta rama) |
-| #26 | `feat/easysign-pades-signing` | **Firma PAdES-B-B real de PDF y `verifyPdfSignature`** (ES-012; base `feat/easysign-oidc-rbac`, sin fusionar). 74 pruebas en esa rama. Límites en `docs/SIGNING_CERTIFICATES.md` |
+| #26 | `feat/easysign-pades-signing` | **Firma PAdES-B-B real de PDF y `verifyPdfSignature`** (ES-012; base `feat/easysign-oidc-rbac`, sin fusionar). 75 pruebas en esa rama. Límites en `docs/SIGNING_CERTIFICATES.md` |
 
 Orden de fusión sugerido (solo con autorización): #10, #11, #12, #13, #14, #15, #16, #17, #18, #19, #20 y luego el de OIDC. `feat/easysign-oidc-rbac` ya contiene las demás ramas (también las de documentación) para trabajar en un único sitio.
 

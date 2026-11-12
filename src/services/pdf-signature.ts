@@ -438,6 +438,11 @@ export function verifyPdfSignature(pdf: Buffer, options: PdfVerifyOptions = {}):
   const dictStart = Math.max(0, text.lastIndexOf(" obj", index));
   const dictEnd = text.indexOf("endobj", index);
   const dict = text.slice(dictStart, dictEnd < 0 ? undefined : dictEnd);
+  // the dictionary must be the value (/V) of a signature field: a CMS parked in an unreferenced object is not a signature of the document
+  const objectId = /(\d+)\s+(\d+)\s*$/.exec(text.slice(Math.max(0, dictStart - 24), dictStart));
+  if (!objectId || !new RegExp(`/V\\s+${objectId[1]}\\s+${objectId[2]}\\s+R\\b`).test(text) || !/\/FT\s*\/Sig\b/.test(text)) {
+    result.errors.push("the signature dictionary is not referenced by a signature field (/FT /Sig with /V) readable in the file");
+  }
   result.subFilter = /\/SubFilter\s*\/([A-Za-z0-9.]+)/.exec(dict)?.[1];
   const m = /\/M\s*\(D:([0-9Z+\-']+)\)/.exec(dict);
   result.signingTime = m ? pdfDateToIso(m[1]) : undefined;

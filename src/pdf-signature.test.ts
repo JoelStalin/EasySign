@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { PDFDocument } from "pdf-lib";
 import { SigningEngine } from "./services/signing-engine.js";
 import { CertificateError, generateTestCertificate, loadPkcs12, toPkcs12 } from "./services/certificate-store.js";
-import { PdfSignatureError, verifyPdfSignature } from "./services/pdf-signature.js";
+import { buildCadesDetachedSignature, PdfSignatureError, verifyPdfSignature } from "./services/pdf-signature.js";
 import { AuditLog } from "./services/audit-log.js";
 import { buildApp } from "./app.js";
 
@@ -164,6 +164,26 @@ test("sign_pdf and verify_signature jobs sign and verify a PDF end to end", asyn
   const prod = await runJob("sign_pdf", req(await makePdf(), { environment: "production" }));
   assert.equal(prod.status, "failed");
   await app.close();
+});
+
+test("a valid CMS parked in an object that no signature field references is not accepted as a signature", () => {
+  const cert = generateTestCertificate();
+  const build = (tail: string) => {
+    const head = "%PDF-1.7\n1 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /ByteRange [0 AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC] /Contents ";
+    const hexLength = 8192;
+    const b = head.length;
+    const c = b + hexLength + 2;
+    const fix = (t: string) => t.replace("AAAAAAAAAA", String(b).padEnd(10)).replace("BBBBBBBBBB", String(c).padEnd(10)).replace("CCCCCCCCCC", String(tail.length).padEnd(10));
+    const signedBytes = Buffer.from(fix(head) + tail, "latin1");
+    const cms = buildCadesDetachedSignature(signedBytes, cert).toString("hex");
+    return Buffer.from(`${fix(head)}<${cms.padEnd(hexLength, "0")}>${tail}`, "latin1");
+  };
+  const orphan = verifyPdfSignature(build(" >>\nendobj\n%%EOF\n"));
+  assert.equal(orphan.valid, false);
+  assert.ok(orphan.errors.some((e) => /not referenced by a signature field/.test(e)), orphan.errors.join("; "));
+  // the same bytes plus a field that points to the dictionary pass: the rejection above is due to the missing field only
+  const referenced = verifyPdfSignature(build(" >>\nendobj\n2 0 obj\n<< /FT /Sig /T (S) /V 1 0 R >>\nendobj\n%%EOF\n"));
+  assert.deepEqual(referenced.errors, []);
 });
 
 const hasOpenssl = spawnSync("openssl", ["version"]).status === 0;

@@ -43,6 +43,8 @@ Código: `src/services/pdf-signature.ts` (firma y verificación) y `src/services
 ### Verificación (`verifyPdfSignature`)
 Extrae `ByteRange` y el CMS de `/Contents`; exige que el rango empiece en 0, que el hueco sea exactamente el valor de la firma y que cubra el archivo completo (contenido añadido después de firmar se rechaza); recalcula el digest de los bytes firmados y lo compara con `message-digest`; comprueba `signing-certificate-v2` y el valor de la firma con el certificado incrustado; y, si se entrega `expectedCertificatePem`, exige que sea ese certificado. Cambiar un byte del documento o de la firma invalida el resultado.
 
+También exige que el diccionario de firma sea el valor (`/V`) de un campo de firma (`/FT /Sig`) legible en el archivo; un CMS válido guardado en un objeto que ningún campo referencia no se acepta. Esta comprobación se hace sobre los bytes del archivo, no con un analizador completo de PDF: un PDF firmado por otra herramienta que guarde el campo dentro de un flujo de objetos comprimido se rechaza aunque su firma sea correcta (falla hacia el lado seguro).
+
 Comprobación independiente hecha en el ThinkCentre (2026-11-12): `pdfsig` 24.02 (Poppler) reporta "Signature is Valid" y "Total document signed" sobre un PDF firmado por este motor, y `openssl cms -verify` (OpenSSL 3.0.13) acepta el CMS; esta última corre como prueba automática cuando `openssl` está instalado.
 
 ### Límites (no afirmar más de esto)
