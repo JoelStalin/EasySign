@@ -17,6 +17,7 @@ const HTML = `<!doctype html>
 button,a.btn{font:inherit;padding:10px 16px;border-radius:6px;border:0;background:#0b5fff;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
 button.secondary,a.btn.secondary{background:#eee;color:#111}button:disabled{opacity:.5}code{word-break:break-all;font-size:13px}
 img.doc{max-width:100%;border:1px solid #ccd}pre.doc{white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;background:#f6f7f9;padding:12px;border-radius:6px}
+input.code{font:inherit;padding:10px;border:1px solid #767680;border-radius:6px;width:9em;letter-spacing:3px;margin-right:8px}
 .err{color:#b00020}.ok{color:#0a6b2d}</style></head>
 <body><h1>Firma de documento</h1><div id="app"><p>Cargando…</p></div><script src="/sign/app.js"></script></body></html>`;
 
@@ -36,7 +37,7 @@ const JS = `(function () {
     return fetch(url(action), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(Object.assign({ token: token }, extra || {})) });
   }
   function api(action, extra) {
-    return post(action, extra).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || j.error || "Error"); return j; }); });
+    return post(action, extra).then(function (r) { return r.json().then(function (j) { if (!r.ok) { var e = new Error(j.message || j.error || "Error"); e.code = j.error; throw e; } return j; }); });
   }
   function fail(e) { clear(); app.appendChild(el("p", "No se pudo continuar: " + e.message + ". Pida un enlace nuevo a quien le envió el documento.", "err")); }
 
@@ -47,6 +48,47 @@ const JS = `(function () {
       if (type === "text/plain") return r.text().then(function (t) { return { type: type, text: t }; });
       return r.blob().then(function (b) { return { type: type, blobUrl: URL.createObjectURL(b) }; });
     }).then(function (v) { docView = v; return api("view"); }).then(function (s) { state = s; render(); }).catch(fail);
+  }
+
+  var otpSent = false;
+  var OTP_TEXT = {
+    OTP_INVALID: "El código no es correcto. Revíselo e intente de nuevo.",
+    OTP_EXPIRED: "El código venció. Pida otro.",
+    OTP_TOO_MANY_ATTEMPTS: "Demasiados intentos. Pida otro código.",
+    OTP_NO_CODE: "No hay un código activo. Pida uno nuevo.",
+    OTP_RESEND_TOO_SOON: "Espere un minuto antes de pedir otro código.",
+    OTP_RESEND_LIMIT: "Se pidieron demasiados códigos. Intente más tarde.",
+    OTP_DELIVERY_FAILED: "No se pudo enviar el código. Intente de nuevo en unos minutos.",
+    OTP_CHANNEL_NOT_CONFIGURED: "El envío de códigos no está disponible. Avise a quien le envió el documento."
+  };
+  // The signer proves control of their mailbox with a one-time code before the Sign button appears.
+  function otpCard() {
+    var box = el("div", undefined, "card");
+    box.appendChild(el("h3", "Verifique su correo"));
+    box.appendChild(el("p", "Antes de firmar le enviaremos un código de 6 dígitos a " + (state.otpEmailHint || "su correo") + ". Vence en 10 minutos y sirve una sola vez."));
+    var msg = el("p", "");
+    msg.setAttribute("role", "status");
+    function show(e) { msg.className = "err"; msg.textContent = OTP_TEXT[e.code] || e.message; }
+    if (otpSent) {
+      var input = document.createElement("input");
+      input.type = "text"; input.className = "code"; input.maxLength = 6;
+      input.setAttribute("inputmode", "numeric"); input.setAttribute("autocomplete", "one-time-code"); input.setAttribute("aria-label", "Código de verificación");
+      var ok = el("button", "Verificar");
+      ok.onclick = function () {
+        var code = input.value.replace(/[^0-9]/g, "");
+        if (code.length !== 6) { show({ message: "Escriba los 6 dígitos del código." }); return; }
+        ok.disabled = true;
+        api("otp/verify", { code: code }).then(function (s) { state = s; render(); }).catch(function (e) { ok.disabled = false; show(e); });
+      };
+      box.appendChild(input); box.appendChild(ok); box.appendChild(document.createTextNode(" "));
+    }
+    var send = el("button", otpSent ? "Enviar otro código" : "Enviar código", otpSent ? "secondary" : undefined);
+    send.onclick = function () {
+      send.disabled = true; msg.className = ""; msg.textContent = "Enviando…";
+      api("otp/request").then(function () { otpSent = true; render(); }).catch(function (e) { send.disabled = false; show(e); });
+    };
+    box.appendChild(send); box.appendChild(msg);
+    return box;
   }
 
   function documentCard() {
@@ -100,6 +142,8 @@ const JS = `(function () {
       var go = el("button", "Aceptar y continuar"); go.disabled = true; cb.onchange = function () { go.disabled = !cb.checked; };
       go.onclick = function () { api("consent", { disclosureHash: d.hash }).then(function (s) { state = s; render(); }).catch(fail); };
       box.appendChild(go); app.appendChild(box);
+    } else if (st === "consented" && state.requireOtp && !state.otpVerified) {
+      app.appendChild(otpCard());
     } else if (st === "consented") {
       var b2 = el("div", undefined, "card");
       b2.appendChild(el("p", "Al pulsar Firmar confirma que es el documento con la huella mostrada arriba."));

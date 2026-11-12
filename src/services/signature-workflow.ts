@@ -13,7 +13,7 @@ import { CHANNELS, type DeliveryChannel } from "./delivery.js";
 
 export type RequestStatus = "draft" | "pending" | "completed" | "cancelled" | "expired";
 export type SignerStatus = "waiting" | "notified" | "viewed" | "consented" | "signed" | "declined";
-type EventType = "created" | "document_attached" | "document_viewed" | "reissued" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed";
+type EventType = "created" | "document_attached" | "document_viewed" | "reissued" | "sent" | "viewed" | "consented" | "signed" | "declined" | "cancelled" | "expired" | "completed" | "otp_requested" | "otp_failed" | "otp_verified";
 
 export interface WorkflowEvent {
   seq: number;
@@ -38,6 +38,8 @@ export interface Signer {
   documentViewedAt?: string;
   signedAt?: string;
   declinedReason?: string;
+  /** When the signer entered the one-time code sent to their email (only for requests with requireOtp). */
+  otpVerifiedAt?: string;
 }
 
 export interface SignatureRequest {
@@ -54,12 +56,14 @@ export interface SignatureRequest {
   cancelReason?: string;
   /** The document the signers must open before accepting and signing (stored in the document store under documentHash). */
   document?: { contentType: string; size: number; fileName: string };
+  /** Each signer must verify a one-time code sent to their email before signing. It proves control of the mailbox, not civil identity. */
+  requireOtp?: boolean;
   signers: Signer[];
 }
 
 export class WorkflowError extends Error {
   constructor(
-    public readonly code: "NOT_FOUND" | "INVALID_INPUT" | "INVALID_STATE" | "UNAUTHORIZED" | "LOCKED" | "EXPIRED" | "NOT_YOUR_TURN" | "DOCUMENT_MISMATCH" | "CHAIN_BROKEN",
+    public readonly code: "NOT_FOUND" | "INVALID_INPUT" | "INVALID_STATE" | "UNAUTHORIZED" | "LOCKED" | "EXPIRED" | "NOT_YOUR_TURN" | "DOCUMENT_MISMATCH" | "CHAIN_BROKEN" | "OTP_REQUIRED",
     message: string
   ) {
     super(message);
@@ -73,6 +77,7 @@ export interface CreateInput {
   documentHash: string;
   ordering?: "sequential" | "parallel";
   expiresInHours?: number;
+  requireOtp?: boolean;
   signers: Array<{ name: string; email: string; channel?: DeliveryChannel; phone?: string }>;
 }
 
@@ -125,8 +130,8 @@ export class SignatureWorkflow {
 
   private apply(e: WorkflowEvent): void {
     if (e.type === "created") {
-      const d = e.detail as { tenantId: string; documentName: string; documentHash: string; ordering: "sequential" | "parallel"; expiresAt: string; signers: Array<Omit<Signer, "status">> };
-      this.requests.set(e.requestId, { id: e.requestId, tenantId: d.tenantId, documentName: d.documentName, documentHash: d.documentHash, ordering: d.ordering, status: "draft", createdAt: e.at, expiresAt: d.expiresAt, signers: d.signers.map((s) => ({ ...s, status: "waiting" as SignerStatus })) });
+      const d = e.detail as { tenantId: string; documentName: string; documentHash: string; ordering: "sequential" | "parallel"; expiresAt: string; requireOtp?: boolean; signers: Array<Omit<Signer, "status">> };
+      this.requests.set(e.requestId, { id: e.requestId, tenantId: d.tenantId, documentName: d.documentName, documentHash: d.documentHash, ordering: d.ordering, status: "draft", createdAt: e.at, expiresAt: d.expiresAt, ...(d.requireOtp ? { requireOtp: true } : {}), signers: d.signers.map((s) => ({ ...s, status: "waiting" as SignerStatus })) });
       return;
     }
     const r = this.requests.get(e.requestId)!;
@@ -150,6 +155,8 @@ export class SignatureWorkflow {
       case "cancelled": r.status = "cancelled"; r.cancelReason = String(e.detail.reason ?? ""); break;
       case "expired": r.status = "expired"; break;
       case "completed": r.status = "completed"; r.completedAt = e.at; break;
+      case "otp_verified": if (s) s.otpVerifiedAt = e.at; break;
+      // otp_requested and otp_failed are evidence only: they change no state
     }
   }
 
@@ -222,6 +229,7 @@ export class SignatureWorkflow {
     this.append("created", id, {
       tenantId: input.tenantId, documentName: input.documentName.trim(), documentHash: input.documentHash, ordering: input.ordering ?? "sequential",
       expiresAt: new Date(this.now().getTime() + hours * 3600_000).toISOString(), signers, createdBy: actor,
+      ...(input.requireOtp ? { requireOtp: true } : {}),
     });
     return this.get(id);
   }
@@ -256,6 +264,7 @@ export class SignatureWorkflow {
     const { r, s } = this.authenticate(requestId, signerId, token);
     if (s.status !== "consented") throw new WorkflowError("INVALID_STATE", "The signer must accept the service terms before signing.");
     if (r.document && !s.documentViewedAt) throw new WorkflowError("INVALID_STATE", "The signer must open the document before signing.");
+    if (r.requireOtp && !s.otpVerifiedAt) throw new WorkflowError("OTP_REQUIRED", "The signer must verify the code sent to their email before signing.");
     if (documentHash !== r.documentHash) throw new WorkflowError("DOCUMENT_MISMATCH", "The confirmed document hash does not match the document of this request.");
     if (r.ordering === "sequential" && r.signers.some((x) => x.order < s.order && x.status !== "signed")) throw new WorkflowError("NOT_YOUR_TURN", "Previous signers have not signed yet.");
 
@@ -312,6 +321,31 @@ export class SignatureWorkflow {
     if (!r.document) throw new WorkflowError("INVALID_STATE", "This request has no document on the platform.");
     if (!s.documentViewedAt) this.append("document_viewed", requestId, {}, signerId);
     return r.document;
+  }
+
+  /**
+   * Authenticates the signer (one-time token) and returns what is needed to send them a verification code.
+   * Only for requests created with requireOtp, and only while the signer can still sign.
+   */
+  public otpContext(requestId: string, signerId: string, token: string): { tenantId: string; documentName: string; name: string; email: string } {
+    const { r, s } = this.authenticate(requestId, signerId, token);
+    if (!r.requireOtp) throw new WorkflowError("INVALID_STATE", "This request does not require a verification code.");
+    if (s.otpVerifiedAt) throw new WorkflowError("INVALID_STATE", "This signer has already verified their email.");
+    if (s.status !== "viewed" && s.status !== "consented") throw new WorkflowError("INVALID_STATE", `A signer in status ${s.status} cannot verify a code.`);
+    return { tenantId: r.tenantId, documentName: r.documentName, name: s.name, email: s.email };
+  }
+
+  /**
+   * Records an OTP step in the hash-chained log. The code and its hash are never part of the event: the detail type
+   * only admits the channel, the expiry, a failure reason and the request evidence.
+   */
+  public otpEvent(
+    requestId: string, signerId: string, token: string, type: "otp_requested" | "otp_failed" | "otp_verified",
+    detail: { channel: "email"; expiresAt?: string; reason?: string; ip?: string; userAgent?: string }
+  ): SignatureRequest {
+    this.otpContext(requestId, signerId, token);
+    this.append(type, requestId, { channel: detail.channel, expiresAt: detail.expiresAt, reason: detail.reason, ip: detail.ip, userAgent: detail.userAgent }, signerId);
+    return this.get(requestId);
   }
 
   public get(requestId: string): SignatureRequest {
