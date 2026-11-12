@@ -66,7 +66,13 @@ export function registerWorkflowRoutes(
         const code = hideNotFound && e.code === "NOT_FOUND" ? "UNAUTHORIZED" : e.code; // do not reveal which request ids exist to anonymous callers
         return reply.code(STATUS[code]).send({ error: code, message: code === "UNAUTHORIZED" ? "Invalid signer or token." : e.message });
       }
-      if (e instanceof DocumentError) return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      if (e instanceof DocumentError) {
+        if (e.code === "KEY_UNAVAILABLE" || e.code === "DECRYPT_FAILED") {
+          reply.log.error(e); // the detail (key id, cause) stays in the server log, not in the response
+          return reply.code(500).send({ error: "DOCUMENT_UNAVAILABLE", message: "The stored document could not be read." });
+        }
+        return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      }
       throw e;
     }
   };

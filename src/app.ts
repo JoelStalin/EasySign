@@ -17,7 +17,7 @@ import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
 import { registerSignPage } from "./routes/sign-page.js";
 import type { DeliveryProvider } from "./services/delivery.js";
-import { DocumentStore } from "./services/document-store.js";
+import { DocumentStore, documentStoreFromEnv } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
 export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
@@ -93,7 +93,7 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, guard, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
     providers: options.deliveryProviders,
-    documents: options.documents ?? new DocumentStore(process.env.EASYSIGN_DOCS_DIR),
+    documents: options.documents ?? documentStoreFromEnv(process.env), // refuses to start in production without a document key
   });
   registerSignPage(app);
 
