@@ -14,7 +14,7 @@ Decisión del dueño del producto (2026-11-02): operar primero como **Proveedor 
 | Verificación real y auditoría de firma (PR #15) | Hecho, sin fusionar |
 | **Flujo de solicitudes de firma con firmantes, consentimiento y evidencia** | Hecho en este PR |
 | Envío de enlaces por correo/WhatsApp (ES-013) | Pendiente: requiere proveedor (WhatsApp Business, correo) |
-| Sellado de documento (PDF/XML firmado con el sello de EasySign, PAdES/XAdES básico) | Pendiente |
+| Sellado de documento (PDF/XML firmado con el sello de EasySign, PAdES/XAdES básico) | Parcial: motor PAdES-B-B listo (ES-012, sin sello de tiempo); falta conectarlo al flujo de solicitudes y XAdES |
 | Identidad del firmante (OTP por correo/teléfono) | Pendiente |
 | OIDC/RBAC y PostgreSQL con aislamiento por empresa (ES-005/006) | Pendiente (bloque grande) |
 

@@ -53,9 +53,26 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
 
   queue.registerHandler("verify_signature", async (job, updateProgress) => {
     updateProgress(30);
-    const data = job.data as { signedXml?: string; expectedCertificatePem?: string };
+    const data = job.data as { signedXml?: string; signedPdfBase64?: string; expectedCertificatePem?: string };
+    if (typeof data.signedPdfBase64 === "string" && data.signedPdfBase64.length > 0) {
+      const pdf = signingEngine.verifyPdf(Buffer.from(data.signedPdfBase64, "base64"), data.expectedCertificatePem);
+      updateProgress(100);
+      return {
+        verified: pdf.valid,
+        errors: pdf.errors,
+        verifiedAt: new Date().toISOString(),
+        subFilter: pdf.subFilter,
+        // claimed by the signer inside the signature; there is no trusted timestamp
+        signingTime: pdf.signingTime,
+        coversWholeDocument: pdf.coversWholeDocument,
+        documentDigest: pdf.documentDigest,
+        certificate: pdf.certificate && { subject: pdf.certificate.subject, issuer: pdf.certificate.issuer, serial: pdf.certificate.serial, notBefore: pdf.certificate.notBefore, notAfter: pdf.certificate.notAfter },
+        // integrity and signature value only; chain of trust, revocation and timestamps are not evaluated (see docs/SIGNING_CERTIFICATES.md)
+        validationProfile: "PADES_CRYPTOGRAPHIC_ONLY",
+      };
+    }
     if (!data.signedXml || typeof data.signedXml !== "string") {
-      throw new Error("verify_signature requires data.signedXml (the XML with an enveloped XML-DSig signature).");
+      throw new Error("verify_signature requires data.signedXml (the XML with an enveloped XML-DSig signature) or data.signedPdfBase64 (a signed PDF).");
     }
     const result = signingEngine.verifyEcfXml(data.signedXml, data.expectedCertificatePem);
     updateProgress(100);

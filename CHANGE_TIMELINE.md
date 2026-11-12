@@ -59,3 +59,14 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Fase 2 (PostgreSQL con RLS) no empezada.** Notas de diseño en `docs/HANDOFF_CLOUD.md`.
 - **Traspaso para continuar en la nube:** `docs/HANDOFF_CLOUD.md` y `CLAUDE.md` (palabra clave `RETOMAR EASYSIGN`) en la rama `feat/easysign-oidc-rbac`, que contiene todas las demás ramas.
 - **Revertir:** `git revert` de los commits de la rama; solo código nuevo de autenticación y documentación.
+
+## 2026-11-12 Firma PAdES real de PDF (ES-012)
+
+- **Qué cambió:** `signPdf` dejó de ser un hash simulado. Ahora incrusta en el PDF una firma CMS/PKCS#7 separada con `SubFilter ETSI.CAdES.detached` (PAdES-B-B), con el mismo almacén de certificados que XML (`.p12` real obligatorio en producción; certificado efímero de pruebas fuera de producción). Nueva función `verifyPdfSignature` y `verify_signature` acepta `signedPdfBase64`. Rama `feat/easysign-pades-signing` (base `feat/easysign-oidc-rbac`).
+- **Cambio de contrato de `sign_pdf`:** ahora exige `pdfBase64` (antes solo recibía un hash) y devuelve el PDF firmado y la evidencia (`documentHash`, `signedDocumentHash`, `byteRangeDigest`, `signedAt`, certificado). Se eliminaron `signatureHash`, `tamperEvidentChain` y `timestampToken`, que eran inventados (el "token de sello de tiempo" no era un sello de tiempo).
+- **Dependencia nueva:** `pdf-lib` 1.17.1 (solo para añadir el campo de firma). El CMS se construye y se verifica con `node:crypto`, sin dependencias nuevas. `npm audit` no reporta nada de `pdf-lib`; siguen los dos avisos previos (`node-forge`, `zod`).
+- **Pruebas:** 8 nuevas en `src/pdf-signature.test.ts` (firmar y verificar, byte alterado dentro del `ByteRange`, firma alterada, contenido añadido, producción sin certificado, `.p12`, entradas inválidas, trabajos de la cola, verificación cruzada con OpenSSL). Comprobado además a mano con `pdfsig` (Poppler).
+- **Límites declarados:** sin sello de tiempo TSA (B-B, no B-T/LTA); sin CRL/OCSP ni validación de cadena; una sola firma por documento; solo RSA; PDF de hasta ~700 KB por la cola; sin validador de conformidad ETSI ni prueba en Acrobat; en Ruta A no tiene valor de firma digital. Detalle en `docs/SIGNING_CERTIFICATES.md`.
+- **Falta:** conectar el sellado al flujo de solicitudes de firma, sello de tiempo (requiere elegir una TSA), firmas sucesivas, HSM (ES-011).
+- **Revertir:** `git revert` de los commits de la rama; `sign_pdf` volvería a ser simulada.
+

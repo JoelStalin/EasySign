@@ -8,6 +8,7 @@ import {
   loadCertificateFromEnv,
   type LoadedCertificate,
 } from "./certificate-store.js";
+import { PADES_PROFILE, PADES_SUBFILTER, signPdfDocument, verifyPdfSignature, type PdfSignatureVerification } from "./pdf-signature.js";
 
 export interface EcfSigningRequest {
   documentId: string;
@@ -43,20 +44,41 @@ export interface EcfVerificationResult {
 export interface PdfSigningRequest {
   documentId: string;
   tenantId: string;
-  documentHash: string;
+  /** The PDF to sign, base64-encoded (jobs travel as JSON). */
+  pdfBase64: string;
+  /** Optional SHA-256 (lowercase hex) the caller expects for the PDF; signing is refused when it does not match. */
+  documentHash?: string;
   signerName: string;
   signerEmail: string;
   reason?: string;
   location?: string;
+  environment?: "test" | "production";
 }
 
 export interface PdfSigningResult {
   signatureId: string;
   documentId: string;
-  signatureHash: string;
-  tamperEvidentChain: string;
-  timestampToken: string;
+  /** The signed PDF, base64-encoded. */
+  signedPdfBase64: string;
+  /** SHA-256 (hex) of the PDF as received, before signing. */
+  documentHash: string;
+  /** SHA-256 (hex) of the signed PDF file. */
+  signedDocumentHash: string;
+  /** SHA-256 (hex) of the bytes covered by the signature (the message-digest inside the CMS). */
+  byteRangeDigest: string;
+  byteRange: [number, number, number, number];
+  /** Signing time claimed by this server (M entry of the signature). It is NOT a trusted timestamp. */
   signedAt: string;
+  subFilter: string;
+  /** PAdES-B-B: no signature timestamp and no embedded revocation data. */
+  profile: string;
+  trustedTimestamp: false;
+  signatureMethod: string;
+  certificateSerial: string;
+  certificateIssuer: string;
+  certificateSubject: string;
+  /** True when signed with the ephemeral test certificate: the result has no legal value. */
+  testCertificate: boolean;
 }
 
 export interface SigningEngineOptions {
@@ -173,14 +195,56 @@ export class SigningEngine {
     return { valid, errors: valid ? [] : errors };
   }
 
+  /**
+   * Signs a PDF with a real PAdES-B-B signature (detached CMS, SubFilter ETSI.CAdES.detached) using the same
+   * certificate rules as XML: production requires the real .p12, the test environment may use the ephemeral one.
+   */
   public async signPdf(request: PdfSigningRequest, progressCallback?: (p: number) => void): Promise<PdfSigningResult> {
-    progressCallback?.(25);
-    const signedAt = new Date().toISOString();
-    const signatureHash = createHash("sha256").update(request.documentHash + request.signerEmail + signedAt).digest("hex");
-    progressCallback?.(65);
-    const tamperEvidentChain = createHash("sha256").update(signatureHash + request.tenantId).digest("hex");
-    const timestampToken = createHash("sha256").update(tamperEvidentChain + Date.now().toString()).digest("base64");
+    progressCallback?.(10);
+    const cert = this.certificateFor(request.environment ?? "test");
+    if (typeof request.pdfBase64 !== "string" || request.pdfBase64.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(request.pdfBase64)) {
+      throw new Error("sign_pdf requires data.pdfBase64 (the PDF to sign, base64-encoded).");
+    }
+    const pdf = Buffer.from(request.pdfBase64, "base64");
+    const documentHash = createHash("sha256").update(pdf).digest("hex");
+    if (request.documentHash !== undefined && request.documentHash !== documentHash) {
+      throw new Error("DOCUMENT_MISMATCH: the SHA-256 of the PDF does not match documentHash.");
+    }
+    progressCallback?.(30);
+
+    // PDF dates have one-second resolution; the evidence reports exactly the time written in the signature
+    const signingTime = new Date(Math.floor(this.now().getTime() / 1000) * 1000);
+    const signed = await signPdfDocument(pdf, {
+      identity: cert,
+      signingTime,
+      reason: request.reason ?? `Documento aceptado por ${request.signerName} <${request.signerEmail}>`,
+      location: request.location,
+      contactInfo: request.signerEmail,
+    });
     progressCallback?.(100);
-    return { signatureId: `pdf-sig-${randomBytes(8).toString("hex")}`, documentId: request.documentId, signatureHash, tamperEvidentChain, timestampToken, signedAt };
+
+    return {
+      signatureId: `pdf-sig-${randomBytes(8).toString("hex")}`,
+      documentId: request.documentId,
+      signedPdfBase64: signed.signedPdf.toString("base64"),
+      documentHash,
+      signedDocumentHash: createHash("sha256").update(signed.signedPdf).digest("hex"),
+      byteRangeDigest: signed.byteRangeDigest,
+      byteRange: signed.byteRange,
+      signedAt: signingTime.toISOString(),
+      subFilter: PADES_SUBFILTER,
+      profile: PADES_PROFILE,
+      trustedTimestamp: false,
+      signatureMethod: RSA_SHA256,
+      certificateSerial: cert.serial,
+      certificateIssuer: cert.issuer,
+      certificateSubject: cert.subject,
+      testCertificate: cert.isTest,
+    };
+  }
+
+  /** Cryptographic verification of a signed PDF against its embedded certificate, or `expectedCertificatePem` when given. */
+  public verifyPdf(signedPdf: Buffer, expectedCertificatePem?: string): PdfSignatureVerification {
+    return verifyPdfSignature(signedPdf, { expectedCertificatePem });
   }
 }
