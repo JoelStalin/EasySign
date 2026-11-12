@@ -130,7 +130,7 @@ test("Cloudflare: bad recipients and bad configuration are refused before any re
   assert.doesNotThrow(() => new CloudflareEmailProvider(base)); // defaults to https://api.cloudflare.com/client/v4; nothing is sent here
 });
 
-test("provider selection by environment: none by default, cloudflare needs its variables, anything else is refused", () => {
+test("provider selection by environment: none without credentials, explicit cloudflare needs token and account, anything else is refused", () => {
   assert.ok(mailProviderFromEnv({}) instanceof NoopMailProvider);
   assert.ok(mailProviderFromEnv({ EASYSIGN_MAIL_PROVIDER: "none" }) instanceof NoopMailProvider);
   const full = { EASYSIGN_MAIL_PROVIDER: "cloudflare", EASYSIGN_MAIL_FROM: "noreply@firma.example.test", EASYSIGN_MAIL_FROM_NAME: "EasySign", CLOUDFLARE_EMAIL_API_TOKEN: TOKEN, CLOUDFLARE_ACCOUNT_ID: ACCOUNT };
@@ -138,7 +138,7 @@ test("provider selection by environment: none by default, cloudflare needs its v
   assert.ok(cf instanceof CloudflareEmailProvider);
   assert.equal(cf.enabled, true);
   assert.ok(!JSON.stringify(Object.keys(cf)).includes(TOKEN));
-  for (const missing of ["EASYSIGN_MAIL_FROM", "CLOUDFLARE_EMAIL_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]) {
+  for (const missing of ["CLOUDFLARE_EMAIL_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]) {
     assert.throws(() => mailProviderFromEnv({ ...full, [missing]: undefined }), mailError("CONFIG"), `${missing} is required`);
   }
   assert.throws(() => mailProviderFromEnv({ EASYSIGN_MAIL_PROVIDER: "sendgrid" }), mailError("CONFIG"));
@@ -188,4 +188,11 @@ test("templates: Spanish, plain, with the data escaped in HTML and the code out 
 
   assert.equal(maskEmail("ana.perez@example.do"), "a***@example.do");
   assert.equal(maskEmail("raro"), "***");
+});
+
+test("mailProviderFromEnv uses the shared Cloudflare Email Sending service automatically, like EasyCount", () => {
+  const shared = { CLOUDFLARE_EMAIL_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "a" };
+  assert.ok(mailProviderFromEnv(shared) instanceof CloudflareEmailProvider, "token + account => Cloudflare without EASYSIGN_MAIL_PROVIDER");
+  assert.ok(mailProviderFromEnv({ ...shared, EASYSIGN_MAIL_PROVIDER: "none" }) instanceof NoopMailProvider, "none still forces no sending");
+  assert.ok(mailProviderFromEnv({ CLOUDFLARE_EMAIL_API_TOKEN: "t" }) instanceof NoopMailProvider, "half credentials without explicit provider => no sending");
 });

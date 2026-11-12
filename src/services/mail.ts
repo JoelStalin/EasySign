@@ -168,17 +168,30 @@ export class CloudflareEmailProvider implements MailProvider {
   }
 }
 
-/** Builds the provider from the environment. A half-configured `cloudflare` fails at start-up instead of failing silently later. */
+/**
+ * Default sender: a domain already onboarded in Cloudflare Email Sending (the same account and service EasyCount uses
+ * on the ThinkCentre). Override with EASYSIGN_MAIL_FROM.
+ */
+export const DEFAULT_MAIL_FROM = "noreply@getupsoft.com";
+
+/**
+ * Builds the provider from the environment, the same way the EasyCount Mailer does: when CLOUDFLARE_EMAIL_API_TOKEN
+ * and CLOUDFLARE_ACCOUNT_ID are present, mail goes through Cloudflare Email Sending (the shared GetUpSoft service).
+ * EASYSIGN_MAIL_PROVIDER=none forces "do not send"; =cloudflare demands the credentials. A half-configured explicit
+ * `cloudflare` fails at start-up instead of failing silently later.
+ */
 export function mailProviderFromEnv(env: Record<string, string | undefined>): MailProvider {
-  const kind = (env.EASYSIGN_MAIL_PROVIDER ?? "none").trim().toLowerCase();
-  if (kind === "" || kind === "none") return new NoopMailProvider();
+  const explicit = env.EASYSIGN_MAIL_PROVIDER?.trim().toLowerCase();
+  const hasCloudflare = Boolean(env.CLOUDFLARE_EMAIL_API_TOKEN?.trim() && env.CLOUDFLARE_ACCOUNT_ID?.trim());
+  const kind = explicit ? explicit : hasCloudflare ? "cloudflare" : "none";
+  if (kind === "none") return new NoopMailProvider();
   if (kind !== "cloudflare") throw new MailError("CONFIG", "EASYSIGN_MAIL_PROVIDER must be `cloudflare` or `none`.");
   return new CloudflareEmailProvider({
     accountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
     apiToken: env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
-    from: { address: (env.EASYSIGN_MAIL_FROM ?? "").trim(), name: env.EASYSIGN_MAIL_FROM_NAME },
+    from: { address: (env.EASYSIGN_MAIL_FROM ?? "").trim() || DEFAULT_MAIL_FROM, name: env.EASYSIGN_MAIL_FROM_NAME?.trim() || "EasySign" },
     replyTo: env.EASYSIGN_MAIL_REPLY_TO?.trim() || undefined,
-    baseUrl: env.EASYSIGN_MAIL_API_BASE_URL?.trim() || undefined,
+    baseUrl: env.EASYSIGN_MAIL_API_BASE_URL?.trim() || env.CLOUDFLARE_API_BASE?.trim() || undefined,
   });
 }
 

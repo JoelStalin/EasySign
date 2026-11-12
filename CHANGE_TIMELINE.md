@@ -67,3 +67,5 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Límites declarados:** el código prueba control del correo, no identidad civil; KYC sigue pendiente. WhatsApp queda solo como interfaz (`MessagingProvider` sin implementación real). La página de firma con el paso del código no se probó en navegador. Los códigos viven en memoria de un proceso.
 - **Pendiente del dueño:** dar de alta el dominio remitente en Cloudflare Email Sending, crear un token con permiso Email Sending: Edit y cargar las variables en el servidor por GitHub Actions; elegir y contratar proveedor de WhatsApp; decidir el proveedor de KYC. Detalle en `docs/EMAIL_AND_OTP.md`.
 - **Revertir:** `git revert` de los commits de la rama. Sin `requireOtp` y sin `EASYSIGN_MAIL_PROVIDER`, el comportamiento es el anterior.
+
+- 2026-11-12: correo de EasySign alineado con el servicio compartido de EasyCount (Cloudflare Email Sending, selección automática por credenciales, remitente por defecto noreply@getupsoft.com). Rama feat/easysign-email-otp. Revertir: git revert del commit.

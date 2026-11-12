@@ -148,3 +148,9 @@ Solo existe la interfaz `MessagingProvider` y `NoopMessagingProvider`. No se env
 ## Revertir
 
 `git revert` de los commits de la rama `feat/easysign-email-otp`. Sin `requireOtp` y con `EASYSIGN_MAIL_PROVIDER` sin definir, el comportamiento es el anterior.
+
+## Servicio compartido con EasyCount (2026-11-12)
+Por decisión del dueño, EasySign envía por **el mismo servicio de correo que ya usa EasyCount en el ThinkCentre**: Cloudflare Email Sending de la cuenta de GetUpSoft (el Worker `mail-inbound` solo recibe correo; el envío es la API REST `/accounts/{id}/email/sending/send`).
+- Si `CLOUDFLARE_EMAIL_API_TOKEN` y `CLOUDFLARE_ACCOUNT_ID` están presentes, Cloudflare se usa automáticamente (igual que el Mailer de EasyCount); `EASYSIGN_MAIL_PROVIDER=none` lo apaga y `=cloudflare` lo exige.
+- Remitente por defecto `noreply@getupsoft.com` (dominio ya dado de alta en Email Sending), nombre `EasySign`; se cambia con `EASYSIGN_MAIL_FROM` / `EASYSIGN_MAIL_FROM_NAME`. También acepta `CLOUDFLARE_API_BASE`, como EasyCount.
+- Se puede reutilizar el token de EasyCount (permiso Email Sending: Edit); se carga solo por los secretos del despliegue, nunca en Git.
