@@ -64,4 +64,4 @@ Probado de extremo a extremo en un navegador real: `created → document_attache
 ### Límites
 - Abrir el documento prueba que se entregó al navegador del firmante, no que lo leyó.
 - No hay visor de PDF incrustado (se abre en otra pestaña del navegador).
-- Documentos grandes o confidenciales: definir con el abogado cifrado en reposo y retención (hoy se guardan sin cifrar en `EASYSIGN_DOCS_DIR`; proteger el directorio).
+- Documentos grandes o confidenciales: se cifran en reposo cuando hay `EASYSIGN_DOCS_KEK` (obligatoria en producción; ver `docs/ENCRYPTION_AT_REST.md`). La retención sigue por definir con el abogado.
