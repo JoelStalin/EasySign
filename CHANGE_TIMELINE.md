@@ -59,3 +59,10 @@ Bitácora de cambios por bloque de trabajo. Cada entrada indica qué se hizo, qu
 - **Fase 2 (PostgreSQL con RLS) no empezada.** Notas de diseño en `docs/HANDOFF_CLOUD.md`.
 - **Traspaso para continuar en la nube:** `docs/HANDOFF_CLOUD.md` y `CLAUDE.md` (palabra clave `RETOMAR EASYSIGN`) en la rama `feat/easysign-oidc-rbac`, que contiene todas las demás ramas.
 - **Revertir:** `git revert` de los commits de la rama; solo código nuevo de autenticación y documentación.
+
+## 2026-11-12 Cifrado en reposo de los documentos
+
+- **Qué se hizo:** los documentos de `EASYSIGN_DOCS_DIR` se cifran con AES-256-GCM, una clave por documento envuelta con una KEK (`EASYSIGN_DOCS_KEK`, `EASYSIGN_DOCS_KEK_ID`); las KEK anteriores de `EASYSIGN_DOCS_KEK_PREVIOUS` siguen descifrando. Formato de archivo versionado; la huella sigue siendo la del documento en claro y se comprueba al descifrar. En producción sin KEK el servicio no arranca; en desarrollo sigue sin cifrar con un aviso. Los archivos anteriores sin cifrar siguen legibles y `npm run docs:reencrypt` los cifra y rota la KEK. Rama `feat/easysign-doc-encryption` (base `feat/easysign-oidc-rbac`), 74/74 pruebas. Detalle en `docs/ENCRYPTION_AT_REST.md`.
+- **Atención al desplegar:** con `NODE_ENV=production` hay que definir la KEK antes de actualizar, o el servicio no arranca. Si se pierde la KEK, los documentos cifrados con ella no se recuperan.
+- **Qué falta:** los libros JSONL (registro, consentimientos, auditoría, solicitudes) guardan datos personales sin cifrar; la política de datos personales (Ley 172-13) y la retención siguen pendientes del abogado; la KEK vive en una variable de entorno, no en un HSM ni KMS; no hay comando para descifrar de vuelta ni revisión criptográfica externa.
+- **Revertir:** `git revert` de los commits de la rama. Los archivos ya cifrados no se leen con el código anterior.
