@@ -38,6 +38,7 @@ Plataforma de firma electrónica (Node 22, TypeScript NodeNext, Fastify 5, Zod).
 | #19 | `docs/easysign-change-timeline` | `CHANGE_TIMELINE.md` |
 | #20 | `feat/easysign-platform-name` | Campo opcional `platformName` en el aviso previo |
 | (nuevo) | `feat/easysign-oidc-rbac` | **OIDC + roles + aislamiento por empresa** (este traspaso va en esta rama) |
+| #26 | `feat/easysign-pades-signing` | **Firma PAdES-B-B real de PDF y `verifyPdfSignature`** (ES-012; base `feat/easysign-oidc-rbac`, sin fusionar). 75 pruebas en esa rama. Límites en `docs/SIGNING_CERTIFICATES.md` |
 
 Orden de fusión sugerido (solo con autorización): #10, #11, #12, #13, #14, #15, #16, #17, #18, #19, #20 y luego el de OIDC. `feat/easysign-oidc-rbac` ya contiene las demás ramas (también las de documentación) para trabajar en un único sitio.
 
@@ -60,7 +61,7 @@ Node ≥ 22. Si cambia de rama, **borre `dist/`** antes de `npm test` (está ign
 - Propuesta: interfaz `LedgerStore` con implementación de archivo (la actual) y PostgreSQL; tabla de eventos `(ledger, seq, tenant_id, type, at, payload jsonb, prev_hash, hash)` con `PRIMARY KEY (ledger, seq)`, **conservar la cadena de hashes** y verificar al arrancar; **RLS por `tenant_id`** (`SET LOCAL app.tenant_id` por transacción) y rol de aplicación sin `BYPASSRLS`; migraciones versionadas; documentos en almacenamiento de objetos o `bytea` con hash.
 - Requiere volver los servicios **asíncronos** (los llamantes y las pruebas hoy son síncronos). Hacerlo por libro, un PR por libro, empezando por el más simple (consentimientos).
 - Probar con un PostgreSQL temporal (contenedor `postgres:16` en puerto aleatorio) y **demostrar el aislamiento con pruebas** (un tenant no lee ni escribe filas de otro, ni siquiera con SQL directo bajo el rol de la app).
-- Después: OTP de identidad del firmante y proveedores de correo/WhatsApp (el dueño debe elegir/contratar), sellado PAdES/XAdES, CRL/OCSP firmadas (requiere clave de CA, Ruta B).
+- Después: OTP de identidad del firmante y proveedores de correo/WhatsApp (el dueño debe elegir/contratar), conectar el motor PAdES (PR #26) al flujo de solicitudes para sellar el documento al completarse, sello de tiempo (elegir TSA), XAdES, CRL/OCSP firmadas (requiere clave de CA, Ruta B).
 
 ## 8. Pendiente que depende del dueño
 RNC de la SRL (comunicación al INDOTEL) · proveedores de correo y WhatsApp · abogado, organismo de evaluación de conformidad, aseguradora y proveedor de HSM para la Ruta B · registro de marcas · autorizar fusiones a `main`.
