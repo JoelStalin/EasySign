@@ -11,27 +11,27 @@ const ev = { channel: "web", ip: "203.0.113.5" };
 const base = { tenantId: "t1", subjectId: "s1", textVersion: "v1", text: "Acepto el tratamiento de mis datos.", evidence: ev };
 const CFG = { providerName: "EasySign SRL", rnc: "101000019", address: "Santo Domingo, RD", serviceDescription: "Firma electrónica", certificateFeatures: "Uso general", liabilityLimitations: "Según contrato", prices: "RD$ 500/mes", serviceLevels: "99.5 %", subscriberObligations: "Custodiar su clave", claimsChannel: "soporte@easysign.test" };
 
-test("marketing contact is denied by default and only allowed after an explicit grant", () => {
+test("marketing contact is denied by default and only allowed after an explicit grant", async () => {
   const l = new ConsentLedger();
-  assert.equal(l.hasConsent("t1", "s1", "marketing"), false);
-  l.grant({ ...base, purpose: "personal_data_processing" });
-  assert.equal(l.hasConsent("t1", "s1", "marketing"), false); // other purposes never imply marketing
-  l.grant({ ...base, purpose: "marketing" });
-  assert.equal(l.hasConsent("t1", "s1", "marketing"), true);
-  l.withdraw("t1", "s1", "marketing", ev);
-  assert.equal(l.hasConsent("t1", "s1", "marketing"), false);
-  assert.equal(l.hasConsent("t2", "s1", "marketing"), false); // tenant isolation
-  assert.throws(() => l.withdraw("t1", "s1", "marketing", ev), (e: unknown) => e instanceof ConsentError && e.code === "NOT_GRANTED");
-  assert.equal(l.verifyChain(), true);
+  assert.equal(await l.hasConsent("t1", "s1", "marketing"), false);
+  await l.grant({ ...base, purpose: "personal_data_processing" });
+  assert.equal(await l.hasConsent("t1", "s1", "marketing"), false); // other purposes never imply marketing
+  await l.grant({ ...base, purpose: "marketing" });
+  assert.equal(await l.hasConsent("t1", "s1", "marketing"), true);
+  await l.withdraw("t1", "s1", "marketing", ev);
+  assert.equal(await l.hasConsent("t1", "s1", "marketing"), false);
+  assert.equal(await l.hasConsent("t2", "s1", "marketing"), false); // tenant isolation
+  await assert.rejects(() => l.withdraw("t1", "s1", "marketing", ev), (e: unknown) => e instanceof ConsentError && e.code === "NOT_GRANTED");
+  assert.equal(await l.verifyChain(), true);
 });
 
-test("only the hash of the accepted text is stored, and tampering is detected on reload", () => {
+test("only the hash of the accepted text is stored, and tampering is detected on reload", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "easysign-consent-")), "consents.jsonl");
   const l = new ConsentLedger({ filePath: file });
-  const e = l.grant({ ...base, purpose: "signature_service_terms" });
+  const e = await l.grant({ ...base, purpose: "signature_service_terms" });
   assert.equal(e.textHash.length, 64);
   assert.ok(!readFileSync(file, "utf8").includes("Acepto el tratamiento"));
-  assert.equal(new ConsentLedger({ filePath: file }).hasConsent("t1", "s1", "signature_service_terms"), true);
+  assert.equal(await new ConsentLedger({ filePath: file }).hasConsent("t1", "s1", "signature_service_terms"), true);
   writeFileSync(file, readFileSync(file, "utf8").replace('"granted"', '"withdrawn"'));
   assert.throws(() => new ConsentLedger({ filePath: file }), (x: unknown) => x instanceof ConsentError && x.code === "CHAIN_BROKEN");
 });

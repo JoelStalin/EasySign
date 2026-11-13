@@ -14,8 +14,8 @@ const STATUS: Record<ConsentError["code"], number> = { INVALID_INPUT: 400, NOT_G
 /** Public: the mandatory disclosures. Protected (Bearer admin token, fail closed): consent writes and history. */
 export function registerConsentRoutes(app: FastifyInstance, ledger: ConsentLedger, disclosure: ServiceDisclosure | undefined, access: Guard): void {
   const authorized = async (request: FastifyRequest, reply: FastifyReply, roles: typeof WRITERS, tenantId: string): Promise<boolean> => Boolean(await access.require(request, reply, roles, tenantId));
-  const guard = (reply: FastifyReply, fn: () => unknown, okCode = 200) => {
-    try { return reply.code(okCode).send(fn()); }
+  const guard = async (reply: FastifyReply, fn: () => Promise<unknown>, okCode = 200) => {
+    try { return reply.code(okCode).send(await fn()); }
     catch (e) { if (e instanceof ConsentError) return reply.code(STATUS[e.code]).send({ error: e.code, message: e.message }); throw e; }
   };
 
@@ -39,7 +39,6 @@ export function registerConsentRoutes(app: FastifyInstance, ledger: ConsentLedge
   app.get("/v1/consents/:tenantId/:subjectId", async (request, reply) => {
     const p = request.params as { tenantId: string; subjectId: string };
     if (!(await authorized(request, reply, READERS, p.tenantId))) return;
-    const marketing = ledger.hasConsent(p.tenantId, p.subjectId, "marketing");
-    return { marketingAllowed: marketing, history: ledger.history(p.tenantId, p.subjectId) };
+    return guard(reply, async () => ({ marketingAllowed: await ledger.hasConsent(p.tenantId, p.subjectId, "marketing"), history: await ledger.history(p.tenantId, p.subjectId) }));
   });
 }

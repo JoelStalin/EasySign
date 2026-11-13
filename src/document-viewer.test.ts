@@ -107,7 +107,7 @@ test("API: upload is checked against the hash, the signer must open the document
   const ev = (await app.inject({ method: "GET", url: `/v1/signature-workflows/${id}/evidence`, headers: h })).json();
   assert.ok(ev.request.signers[0].documentViewedAt);
   assert.ok(ev.events.some((e: { type: string }) => e.type === "document_viewed"));
-  assert.ok(!JSON.stringify(audit.query()).includes("%PDF"), "document bytes never reach the audit ledger");
+  assert.ok(!JSON.stringify((await audit.query())).includes("%PDF"), "document bytes never reach the audit ledger");
 
   // explicit acknowledgement lets a request go out without a document
   const id2 = await make();

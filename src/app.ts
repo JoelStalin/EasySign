@@ -9,23 +9,43 @@ import { registerRegistryRoutes } from "./routes/registry-routes.js";
 import { CertificateRegistry } from "./services/certificate-registry.js";
 import { readFileSync } from "node:fs";
 import { registerConsentRoutes } from "./routes/consent-routes.js";
-import { ConsentLedger } from "./services/consent-ledger.js";
+import pg from "pg";
+import { CONSENT_LEDGER, ConsentLedger } from "./services/consent-ledger.js";
+import { PostgresLedgerStore } from "./storage/postgres-ledger-store.js";
+import type { LedgerDefinition } from "./storage/ledger-store.js";
 import { registerAuditRoutes } from "./routes/audit-routes.js";
-import { AuditLog } from "./services/audit-log.js";
+import { AUDIT_LEDGER, AuditLog } from "./services/audit-log.js";
 import { Guard, authenticatorFromEnv, type Authenticator } from "./auth/guard.js";
 import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
 import { registerSignPage } from "./routes/sign-page.js";
 import type { DeliveryProvider } from "./services/delivery.js";
-import { DocumentStore } from "./services/document-store.js";
+import { emailDeliveryProviders, mailProviderFromEnv, type MailProvider } from "./services/mail.js";
+import type { SignerOtpService } from "./services/signer-otp.js";
+import { DocumentStore, documentStoreFromEnv } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; databaseUrl?: string; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore; mailProvider?: MailProvider; otp?: SignerOtpService } = {}) {
   const app = Fastify({ logger: false });
 
   const staticAdminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
   const guard = new Guard("authenticator" in options ? options.authenticator : authenticatorFromEnv(process.env, staticAdminToken));
-  const audit = options.auditLog ?? new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE });
+  // With EASYSIGN_DATABASE_URL the consent and audit ledgers live in PostgreSQL under per-tenant row level security
+  // (docs/POSTGRES_TENANCY.md); without it, in JSONL files or in memory as before.
+  const databaseUrl = "databaseUrl" in options ? options.databaseUrl : process.env.EASYSIGN_DATABASE_URL;
+  let pool: pg.Pool | undefined;
+  const postgresStore = <P>(definition: LedgerDefinition<P>): PostgresLedgerStore<P> => {
+    if (!pool) {
+      const created = new pg.Pool({ connectionString: databaseUrl, max: Number(process.env.EASYSIGN_DATABASE_POOL_MAX ?? 10) });
+      created.on("error", () => { /* an idle connection dropped; the next query reconnects */ });
+      app.addHook("onClose", async () => { await created.end(); });
+      pool = created;
+    }
+    const store = new PostgresLedgerStore(pool, definition);
+    app.addHook("onReady", async () => { await store.ready(); }); // refuse to start with a role that could bypass tenant isolation
+    return store;
+  };
+  const audit = options.auditLog ?? (databaseUrl ? new AuditLog({ store: postgresStore(AUDIT_LEDGER) }) : new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE }));
   registerAuditRoutes(app, audit, guard);
 
   const queue = new QueueEngine({
@@ -86,9 +106,8 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   });
 
   const auditSigning = (outcome: "success" | "error") => (job: { id: string; tenantId: string; operation: string }) => {
-    try {
-      audit.record({ correlationId: job.id, tenantId: job.tenantId || "platform", actor: "queue-worker", action: `job:${job.operation}`, resource: job.id, outcome, details: { operation: job.operation } });
-    } catch { /* auditing must never break signing */ }
+    audit.record({ correlationId: job.id, tenantId: job.tenantId || "platform", actor: "queue-worker", action: `job:${job.operation}`, resource: job.id, outcome, details: { operation: job.operation } })
+      .catch(() => { /* auditing must never break signing */ });
   };
   queue.on("job:completed", auditSigning("success"));
   queue.on("job:failed", auditSigning("error"));
@@ -105,12 +124,16 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
     return buildServiceDisclosure(d.config, d.version);
   };
   const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
-  const consentLedger = options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
+  const consentLedger = options.consentLedger ?? (databaseUrl ? new ConsentLedger({ store: postgresStore(CONSENT_LEDGER) }) : new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE }));
   registerConsentRoutes(app, consentLedger, disclosure, guard);
+  // Outbound mail: `none` (default) keeps the previous behaviour, the link goes back to the administrator.
+  const mail = options.mailProvider ?? mailProviderFromEnv(process.env);
+  const platformName = (disclosure?.config as Record<string, string> | undefined)?.platformName || process.env.EASYSIGN_MAIL_FROM_NAME?.trim() || "EasySign";
   registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, guard, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
-    providers: options.deliveryProviders,
-    documents: options.documents ?? new DocumentStore(process.env.EASYSIGN_DOCS_DIR),
+    providers: options.deliveryProviders ?? emailDeliveryProviders(mail, platformName),
+    mail, otp: options.otp, audit, platformName,
+    documents: options.documents ?? documentStoreFromEnv(process.env), // refuses to start in production without a document key
   });
   registerSignPage(app);
 

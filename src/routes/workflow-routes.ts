@@ -7,6 +7,9 @@ import { NON_QUALIFIED_NOTICE } from "../services/legal-notices.js";
 import { READERS, WRITERS, tenantOf, type Guard } from "../auth/guard.js";
 import { DocumentError, DocumentStore, MAX_DOCUMENT_BYTES, safeFileName } from "../services/document-store.js";
 import { SignatureWorkflow, WorkflowError, type IssuedToken, type SignatureRequest } from "../services/signature-workflow.js";
+import { NoopMailProvider, maskEmail, otpEmail, type MailProvider } from "../services/mail.js";
+import { OtpError, SignerOtpService, type OtpErrorCode } from "../services/signer-otp.js";
+import type { AuditLog } from "../services/audit-log.js";
 
 const Channel = z.enum(CHANNELS as unknown as [string, ...string[]]);
 const CreateSchema = z.object({
@@ -15,6 +18,7 @@ const CreateSchema = z.object({
   documentHash: z.string().length(64),
   ordering: z.enum(["sequential", "parallel"]).optional(),
   expiresInHours: z.number().int().optional(),
+  requireOtp: z.boolean().optional(),
   signers: z.array(z.object({ name: z.string().min(1).max(120), email: z.string().max(200), channel: Channel.optional(), phone: z.string().max(20).optional() })).min(1).max(20),
 });
 const TokenOnly = z.object({ token: z.string().min(20).max(200) });
@@ -23,8 +27,15 @@ const SignBody = TokenOnly.extend({ documentHash: z.string().length(64) });
 const DeclineBody = TokenOnly.extend({ reason: z.string().max(300).default("") });
 const CancelBody = z.object({ reason: z.string().max(300).default("") });
 const ReissueBody = z.object({ channel: Channel.optional() });
+const OtpVerifyBody = TokenOnly.extend({ code: z.string().regex(/^\d{6}$/) });
 
-const STATUS: Record<WorkflowError["code"], number> = { NOT_FOUND: 404, INVALID_INPUT: 400, INVALID_STATE: 409, UNAUTHORIZED: 401, LOCKED: 429, EXPIRED: 410, NOT_YOUR_TURN: 409, DOCUMENT_MISMATCH: 409, CHAIN_BROKEN: 500 };
+const STATUS: Record<WorkflowError["code"], number> = { NOT_FOUND: 404, INVALID_INPUT: 400, INVALID_STATE: 409, UNAUTHORIZED: 401, LOCKED: 429, EXPIRED: 410, NOT_YOUR_TURN: 409, DOCUMENT_MISMATCH: 409, CHAIN_BROKEN: 500, OTP_REQUIRED: 403 };
+const OTP_STATUS: Record<OtpErrorCode, number> = { RESEND_TOO_SOON: 429, RESEND_LIMIT: 429, NO_CODE: 409, EXPIRED: 410, TOO_MANY_ATTEMPTS: 429, INVALID: 400 };
+
+/** The code could not be sent: no mail provider, or the provider failed. */
+class OtpChannelError extends Error {
+  constructor(public readonly status: number, public readonly code: "OTP_CHANNEL_NOT_CONFIGURED" | "OTP_DELIVERY_FAILED", message: string) { super(message); }
+}
 
 /** What a signer may see: never the other signers' emails or phones. */
 const signerView = (r: SignatureRequest, signerId: string, disclosure: ServiceDisclosure | undefined) => {
@@ -33,6 +44,7 @@ const signerView = (r: SignatureRequest, signerId: string, disclosure: ServiceDi
     id: r.id, documentName: r.documentName, documentHash: r.documentHash, status: r.status, expiresAt: r.expiresAt, ordering: r.ordering,
     you: you && { id: you.id, name: you.name, order: you.order, status: you.status, documentViewed: Boolean(you.documentViewedAt) }, document: r.document, documentViewed: Boolean(you?.documentViewedAt), position: `${you?.order}/${r.signers.length}`,
     notice: NON_QUALIFIED_NOTICE, disclosure,
+    requireOtp: Boolean(r.requireOtp), otpVerified: Boolean(you?.otpVerifiedAt), otpEmailHint: r.requireOtp && you ? maskEmail(you.email) : undefined,
   };
 };
 
@@ -41,6 +53,12 @@ export interface WorkflowRouteOptions {
   publicBaseUrl?: string;
   providers?: DeliveryProvider[];
   documents?: DocumentStore;
+  /** Sends the signer's one-time code. Without a real provider, requests with requireOtp are refused. */
+  mail?: MailProvider;
+  otp?: SignerOtpService;
+  audit?: AuditLog;
+  /** Name shown in the emails, e.g. the commercial name of the platform. */
+  platformName?: string;
 }
 
 /**
@@ -51,6 +69,14 @@ export function registerWorkflowRoutes(
   app: FastifyInstance, workflow: SignatureWorkflow, consents: ConsentLedger, disclosure: ServiceDisclosure | undefined, guard: Guard, options: WorkflowRouteOptions = {}
 ): void {
   const documents = options.documents ?? new DocumentStore();
+  const mail = options.mail ?? new NoopMailProvider();
+  const otp = options.otp ?? new SignerOtpService();
+  const platformName = options.platformName ?? "EasySign";
+  /** Audit ledger entry for an OTP step. Details never carry the code (and the ledger redacts secret-looking keys anyway). */
+  const auditOtp = (tenantId: string, requestId: string, signerId: string, action: string, outcome: "success" | "denied" | "error", details: Record<string, unknown>) => {
+    try { options.audit?.record({ correlationId: requestId, tenantId, actor: `signer:${signerId}`, action: `signer:${action}`, resource: `signature-workflow:${requestId}`, outcome, details }); }
+    catch { /* auditing must never break the signer flow; the workflow log keeps its own event */ }
+  };
   app.addContentTypeParser(["application/pdf", "image/png", "image/jpeg", "text/plain", "application/octet-stream"], { parseAs: "buffer", bodyLimit: MAX_DOCUMENT_BYTES }, (_req, body, done) => done(null, body));
   const admin = async (request: FastifyRequest, reply: FastifyReply, roles: typeof WRITERS, tenantId?: string, hideForeign = false): Promise<string | undefined> => (await guard.require(request, reply, roles, tenantId, hideForeign))?.sub;
   /** Authorizes an action on an existing request: the tenant is the request's own; an unknown or foreign id looks the same to tenant roles. */
@@ -66,7 +92,18 @@ export function registerWorkflowRoutes(
         const code = hideNotFound && e.code === "NOT_FOUND" ? "UNAUTHORIZED" : e.code; // do not reveal which request ids exist to anonymous callers
         return reply.code(STATUS[code]).send({ error: code, message: code === "UNAUTHORIZED" ? "Invalid signer or token." : e.message });
       }
-      if (e instanceof DocumentError) return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      if (e instanceof OtpError) {
+        if (e.meta.retryAfterSeconds) reply.header("retry-after", String(e.meta.retryAfterSeconds));
+        return reply.code(OTP_STATUS[e.code]).send({ error: `OTP_${e.code}`, message: e.message, ...e.meta });
+      }
+      if (e instanceof OtpChannelError) return reply.code(e.status).send({ error: e.code, message: e.message });
+      if (e instanceof DocumentError) {
+        if (e.code === "KEY_UNAVAILABLE" || e.code === "DECRYPT_FAILED") {
+          reply.log.error(e); // the detail (key id, cause) stays in the server log, not in the response
+          return reply.code(500).send({ error: "DOCUMENT_UNAVAILABLE", message: "The stored document could not be read." });
+        }
+        return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      }
       throw e;
     }
   };
@@ -86,6 +123,9 @@ export function registerWorkflowRoutes(
     const actor = await admin(request, reply, WRITERS, tenantOf(request.body)); if (!actor) return;
     const body = CreateSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST", issues: body.error.issues });
+    if (body.data.requireOtp && !mail.enabled) {
+      return reply.code(503).send({ error: "OTP_CHANNEL_NOT_CONFIGURED", message: "requireOtp needs a mail provider (EASYSIGN_MAIL_PROVIDER): the code is sent to the signer's email." });
+    }
     return run(reply, () => workflow.create(body.data as Parameters<SignatureWorkflow["create"]>[0], actor), 201);
   });
   app.post("/v1/signature-workflows/:id/send", async (request, reply) => {
@@ -168,9 +208,57 @@ export function registerWorkflowRoutes(
     const body = ConsentBody.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
     const { id, signerId } = ids(request);
-    return run(reply, () => {
+    return run(reply, async () => {
       const r = workflow.consent(id, signerId, body.data.token, body.data.disclosureHash, disclosure.hash, evidence(request));
-      consents.grant({ tenantId: r.tenantId, subjectId: signerId, purpose: "signature_service_terms", textVersion: disclosure.version, text: disclosure.hash, evidence: { channel: "signature-workflow", ...evidence(request) } });
+      await consents.grant({ tenantId: r.tenantId, subjectId: signerId, purpose: "signature_service_terms", textVersion: disclosure.version, text: disclosure.hash, evidence: { channel: "signature-workflow", ...evidence(request) } });
+      return signerView(r, signerId, disclosure);
+    }, 200, true);
+  });
+  // ---- signer: one-time code by email (only for requests created with requireOtp) ----
+  app.post("/v1/signature-workflows/:id/signers/:signerId/otp/request", async (request, reply) => {
+    const body = TokenOnly.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
+    const { id, signerId } = ids(request);
+    return run(reply, async () => {
+      const ctx = workflow.otpContext(id, signerId, body.data.token);
+      if (!mail.enabled) throw new OtpChannelError(503, "OTP_CHANNEL_NOT_CONFIGURED", "No mail provider is configured, so the code cannot be sent.");
+      const key = `${id}:${signerId}`;
+      let issued: { code: string; expiresAt: Date };
+      try { issued = otp.issue(key); }
+      catch (e) {
+        if (e instanceof OtpError) auditOtp(ctx.tenantId, id, signerId, "otp_requested", "denied", { channel: "email", reason: e.code, ...evidence(request) });
+        throw e;
+      }
+      try {
+        await mail.send(otpEmail({ to: ctx.email, name: ctx.name, documentName: ctx.documentName, code: issued.code, minutes: Math.round(otp.ttlMs / 60_000), platformName }));
+      } catch {
+        otp.revoke(key); // a code nobody received must not stay valid
+        auditOtp(ctx.tenantId, id, signerId, "otp_requested", "error", { channel: "email", reason: "DELIVERY_FAILED", ...evidence(request) });
+        throw new OtpChannelError(502, "OTP_DELIVERY_FAILED", "The verification code could not be sent. Try again later.");
+      }
+      const expiresAt = issued.expiresAt.toISOString();
+      workflow.otpEvent(id, signerId, body.data.token, "otp_requested", { channel: "email", expiresAt, ...evidence(request) });
+      auditOtp(ctx.tenantId, id, signerId, "otp_requested", "success", { channel: "email", expiresAt, ...evidence(request) });
+      return { sent: true, channel: "email", sentTo: maskEmail(ctx.email), expiresAt };
+    }, 200, true);
+  });
+  app.post("/v1/signature-workflows/:id/signers/:signerId/otp/verify", async (request, reply) => {
+    const body = OtpVerifyBody.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
+    const { id, signerId } = ids(request);
+    return run(reply, () => {
+      const ctx = workflow.otpContext(id, signerId, body.data.token);
+      try { otp.verify(`${id}:${signerId}`, body.data.code); }
+      catch (e) {
+        // Only bounded failures reach the ledgers (at most 5 wrong tries and one expiry per code), so the log cannot be flooded.
+        if (e instanceof OtpError && (e.code === "INVALID" || e.code === "EXPIRED")) {
+          workflow.otpEvent(id, signerId, body.data.token, "otp_failed", { channel: "email", reason: e.code, ...evidence(request) });
+          auditOtp(ctx.tenantId, id, signerId, "otp_failed", "denied", { channel: "email", reason: e.code, ...evidence(request) });
+        }
+        throw e;
+      }
+      const r = workflow.otpEvent(id, signerId, body.data.token, "otp_verified", { channel: "email", ...evidence(request) });
+      auditOtp(ctx.tenantId, id, signerId, "otp_verified", "success", { channel: "email", ...evidence(request) });
       return signerView(r, signerId, disclosure);
     }, 200, true);
   });

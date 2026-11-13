@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { AuditLog } from "../services/audit-log.js";
+import { AuditError, type AuditLog } from "../services/audit-log.js";
 import { Guard, tenantOf, type Role } from "../auth/guard.js";
 
 const CORRELATION = /^[A-Za-z0-9._-]{8,80}$/;
@@ -28,7 +28,7 @@ export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, guard
     if (!mutating || !AUDITED.some((p) => path.startsWith(p))) return;
     const body = (request.body ?? {}) as Record<string, unknown>;
     const code = reply.statusCode;
-    audit.record({
+    await audit.record({
       correlationId: (request as unknown as { correlationId: string }).correlationId,
       tenantId: request.principal && !request.principal.roles.includes("platform_admin") && request.principal.tenantId ? request.principal.tenantId : typeof body.tenantId === "string" && body.tenantId ? body.tenantId : "platform",
       actor: path.includes("/signers/") ? "signer" : request.principal?.sub ?? "anonymous",
@@ -46,7 +46,14 @@ export function registerAuditRoutes(app: FastifyInstance, audit: AuditLog, guard
     const platform = p.roles.includes("platform_admin");
     const tenantId = platform ? q.tenantId : p.tenantId; // tenant roles can only ever see their own tenant
     if (!platform && !tenantId) return reply.code(403).send({ error: "FORBIDDEN", message: "Your token has no tenant." });
-    return { chainValid: audit.verifyChain(), events: audit.query({ tenantId, action: q.action, correlationId: q.correlationId, from: q.from, to: q.to, limit: q.limit ? Number(q.limit) : undefined }) };
+    try {
+      const events = await audit.query({ tenantId, action: q.action, correlationId: q.correlationId, from: q.from, to: q.to, limit: q.limit ? Number(q.limit) : undefined });
+      return { chainValid: await audit.verifyChain(tenantId), events };
+    } catch (e) {
+      // with PostgreSQL the ledger is isolated per tenant, so even a platform admin has to name the tenant
+      if (e instanceof AuditError) return reply.code(e.code === "TENANT_REQUIRED" ? 400 : 500).send({ error: e.code, message: e.message });
+      throw e;
+    }
   });
 
   app.post("/v1/audit/export", async (request, reply) => {
