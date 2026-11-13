@@ -30,3 +30,22 @@ Firmante (token en el cuerpo): `POST /v1/signature-workflows/:id/signers/:signer
 - Sellado criptográfico del documento firmado (PAdES/XAdES básico con el sello de EasySign) y sello de tiempo.
 - Los datos personales (nombre y correo) quedan en un log inmutable: definir con el abogado la política de retención y supresión (Ley 172-13) y valorar guardar solo un hash del correo.
 - Los tokens de "siguiente firmante" viven en memoria hasta que el administrador los recoge: se pierden si el servicio se reinicia (hay que volver a enviar).
+
+## Entrega del enlace: el cliente elige el canal (y puede ser un QR en pantalla)
+Cada firmante lleva su canal (`channel`): `email`, `whatsapp`, `link` o `qr`. Se elige al crear la solicitud y se puede **cambiar después** con `POST /v1/signature-workflows/:id/signers/:signerId/reissue {channel}` (por ejemplo, de correo a QR si el firmante está presente).
+- **qr:** la respuesta trae `qrSvg` (SVG generado en el servidor, sin servicios externos) y `signingUrl`. El cliente lo muestra en pantalla y el firmante lo escanea con su teléfono.
+- **link:** `signingUrl` para copiar y entregar.
+- **email / whatsapp:** se envían por el proveedor configurado (ES-013). **Sin proveedor no se envía nada**: el resultado es `pending_provider` e incluye el enlace para entregarlo a mano. WhatsApp exige teléfono en formato internacional (`+18095550100`). Si el proveedor envía, el enlace no se devuelve en la respuesta.
+- **El token va en el fragmento del enlace** (`/sign/<solicitud>/<firmante>#<token>`): los navegadores no lo envían al servidor ni queda en los logs de acceso; la página lo lee y lo borra de la barra de direcciones.
+- **Reemisión:** invalida el token anterior, desbloquea al firmante tras 5 fallos y cubre el caso de reinicio del servicio. Solo para firmantes que ya tienen su turno.
+
+### Página de firma (`GET /sign/:solicitud/:firmante`)
+Estática y sin secretos. Muestra el aviso de que no tiene valor de firma digital, el documento (nombre y huella SHA-256) y la información previa; exige marcar la aceptación y luego Firmar o Rechazar. Cabeceras: CSP `script-src 'self'`, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Todo texto del API se inserta con `textContent` (nunca `innerHTML`). Verificada en un navegador real: flujo completo `created → sent → viewed → consented → signed → completed`.
+
+### Configuración adicional
+`EASYSIGN_PUBLIC_BASE_URL` (origen público para construir los enlaces; sin él el envío devuelve `error`).
+
+### Límites declarados
+- La página muestra la **huella** del documento pero aún no el documento: falta un visor/descarga del documento antes de firmar (pendiente, importante para la solidez de la evidencia).
+- Quien escanea el QR (o abre el enlace) puede firmar: el token prueba posesión del enlace, no identidad civil. Para QR en pantalla, el cliente debe asegurarse de que lo escanea el firmante correcto; el OTP de identidad sigue pendiente.
+- Los proveedores de correo y WhatsApp no están integrados.
