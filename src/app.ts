@@ -12,6 +12,7 @@ import { registerConsentRoutes } from "./routes/consent-routes.js";
 import { ConsentLedger } from "./services/consent-ledger.js";
 import { registerAuditRoutes } from "./routes/audit-routes.js";
 import { AuditLog } from "./services/audit-log.js";
+import { Guard, authenticatorFromEnv, type Authenticator } from "./auth/guard.js";
 import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
 import { registerSignPage } from "./routes/sign-page.js";
@@ -19,12 +20,13 @@ import type { DeliveryProvider } from "./services/delivery.js";
 import { DocumentStore } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
   const app = Fastify({ logger: false });
 
-  const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
+  const staticAdminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
+  const guard = new Guard("authenticator" in options ? options.authenticator : authenticatorFromEnv(process.env, staticAdminToken));
   const audit = options.auditLog ?? new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE });
-  registerAuditRoutes(app, audit, adminToken);
+  registerAuditRoutes(app, audit, guard);
 
   const queue = new QueueEngine({
     concurrency: options.queueConcurrency ?? 10,
@@ -77,7 +79,7 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   registerTransactionRoutes(app, { queue, sseHub, webhookDispatcher });
 
   const registry = options.registry ?? new CertificateRegistry({ filePath: process.env.EASYSIGN_REGISTRY_FILE });
-  registerRegistryRoutes(app, registry, adminToken);
+  registerRegistryRoutes(app, registry, guard);
 
   const disclosureFile = process.env.EASYSIGN_DISCLOSURE_FILE;
   const loadDisclosure = (): ServiceDisclosure | undefined => {
@@ -87,8 +89,8 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   };
   const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
   const consentLedger = options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
-  registerConsentRoutes(app, consentLedger, disclosure, adminToken);
-  registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, adminToken, {
+  registerConsentRoutes(app, consentLedger, disclosure, guard);
+  registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, guard, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
     providers: options.deliveryProviders,
     documents: options.documents ?? new DocumentStore(process.env.EASYSIGN_DOCS_DIR),

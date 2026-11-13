@@ -15,6 +15,7 @@
   "dependencies": {
     "@xmldom/xmldom": "^0.9.12",
     "fastify": "^5.2.0",
+    "jose": "^6.2.15",
     "node-forge": "^1.4.2",
     "qrcode": "^1.5.4",
     "xml-crypto": "^6.4.0",
