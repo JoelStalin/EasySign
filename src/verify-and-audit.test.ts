@@ -42,10 +42,10 @@ test("signing operations are written to the audit ledger without payloads", asyn
   const app = buildApp({ registryAdminToken: undefined, auditLog: audit });
   await runJob(app, "sign_ecf_xml", { documentId: "d2", tenantId: "t9", rncEmisor: "101000019", eNcf: "E310000000008", rawXml: XML }, "t9");
   await runJob(app, "verify_signature", { signatureValue: "short" }, "t9");
-  const events = audit.query({ tenantId: "t9" });
+  const events = (await audit.query({ tenantId: "t9" }));
   assert.ok(events.some((e) => e.action === "job:sign_ecf_xml" && e.outcome === "success"));
   assert.ok(events.some((e) => e.action === "job:verify_signature" && e.outcome === "error"));
   assert.ok(!JSON.stringify(events).includes("E310000000008"), "document data is not stored");
-  assert.equal(audit.verifyChain(), true);
+  assert.equal(await audit.verifyChain(), true);
   await app.close();
 });

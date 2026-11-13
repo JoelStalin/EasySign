@@ -98,9 +98,9 @@ test("tenant isolation on consents and the audit ledger; the actor is the token'
   assert.equal((await app.inject({ method: "POST", url: "/v1/audit/export", headers: adminA, payload: { tenantId: "tenant-a" } })).statusCode, 200);
   assert.equal((await app.inject({ method: "GET", url: "/v1/audit/events", headers: await as(["tenant_operator"], "tenant-a") })).statusCode, 403); // operators do not read the ledger
 
-  assert.ok(audit.query({ tenantId: "tenant-a" }).some((e) => e.actor === "alice" && e.outcome === "success"));
-  assert.ok(audit.query({ tenantId: "tenant-b" }).some((e) => e.actor === "root"));
-  assert.ok(audit.query().some((e) => e.outcome === "denied" && e.tenantId === "tenant-a"), "denied cross-tenant attempts are audited");
+  assert.ok((await audit.query({ tenantId: "tenant-a" })).some((e) => e.actor === "alice" && e.outcome === "success"));
+  assert.ok((await audit.query({ tenantId: "tenant-b" })).some((e) => e.actor === "root"));
+  assert.ok((await audit.query()).some((e) => e.outcome === "denied" && e.tenantId === "tenant-a"), "denied cross-tenant attempts are audited");
 });
 
 test("configuration: OIDC turns the static token off unless break-glass is on; nothing configured fails closed", async () => {

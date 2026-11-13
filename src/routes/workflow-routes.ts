@@ -208,9 +208,9 @@ export function registerWorkflowRoutes(
     const body = ConsentBody.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
     const { id, signerId } = ids(request);
-    return run(reply, () => {
+    return run(reply, async () => {
       const r = workflow.consent(id, signerId, body.data.token, body.data.disclosureHash, disclosure.hash, evidence(request));
-      consents.grant({ tenantId: r.tenantId, subjectId: signerId, purpose: "signature_service_terms", textVersion: disclosure.version, text: disclosure.hash, evidence: { channel: "signature-workflow", ...evidence(request) } });
+      await consents.grant({ tenantId: r.tenantId, subjectId: signerId, purpose: "signature_service_terms", textVersion: disclosure.version, text: disclosure.hash, evidence: { channel: "signature-workflow", ...evidence(request) } });
       return signerView(r, signerId, disclosure);
     }, 200, true);
   });

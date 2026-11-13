@@ -225,7 +225,7 @@ test("API: full flow with requireOtp, and neither the responses nor the ledgers 
   assert.deepEqual(evidence.events.map((e: { type: string }) => e.type), ["created", "sent", "viewed", "consented", "otp_requested", "otp_failed", "otp_verified", "signed", "completed"]);
   assert.equal(evidence.chainValid, true);
   assert.ok(evidence.request.signers[0].otpVerifiedAt);
-  const audit = s.auditLog.query({ correlationId: s.id });
+  const audit = await s.auditLog.query({ correlationId: s.id });
   assert.deepEqual(audit.map((e) => `${e.action}:${e.outcome}`), ["signer:otp_requested:success", "signer:otp_requested:denied", "signer:otp_failed:denied", "signer:otp_verified:success"]);
   assert.equal(audit[0].actor, `signer:${s.signerId}`);
   assert.equal(audit[0].tenantId, "t1");
@@ -261,7 +261,7 @@ test("API: after five wrong codes even the right one is refused, and signing sta
   assert.equal(locked.json().error, "OTP_TOO_MANY_ATTEMPTS");
   assert.equal((await s.post("sign", { documentHash: DOC })).statusCode, 403);
   // the ledger is not flooded: only the five bounded failures were written
-  assert.equal(s.auditLog.query({ correlationId: s.id, action: "signer:otp_failed" }).length, 5);
+  assert.equal((await s.auditLog.query({ correlationId: s.id, action: "signer:otp_failed" })).length, 5);
 });
 
 test("API: if the email cannot be sent the code is revoked and the signer is told to retry", async () => {
@@ -273,7 +273,7 @@ test("API: if the email cannot be sent the code is revoked and the signer is tol
   assert.equal(failed.json().error, "OTP_DELIVERY_FAILED");
   assert.ok(!failed.body.includes("provider down"), "provider errors are not shown to the signer");
   assert.equal((await s.post("otp/verify", { code: "000000" })).json().error, "OTP_NO_CODE");
-  assert.deepEqual(s.auditLog.query({ correlationId: s.id }).map((e) => e.outcome), ["error"]);
+  assert.deepEqual((await s.auditLog.query({ correlationId: s.id })).map((e) => e.outcome), ["error"]);
 });
 
 test("API: a request without requireOtp has no OTP step and signs as before", async () => {
