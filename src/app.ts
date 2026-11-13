@@ -18,7 +18,8 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   const app = Fastify({ logger: false });
 
   const adminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
-  registerAuditRoutes(app, options.auditLog ?? new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE }), adminToken);
+  const audit = options.auditLog ?? new AuditLog({ filePath: process.env.EASYSIGN_AUDIT_FILE });
+  registerAuditRoutes(app, audit, adminToken);
 
   const queue = new QueueEngine({
     concurrency: options.queueConcurrency ?? 10,
@@ -44,16 +45,29 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   });
 
   queue.registerHandler("verify_signature", async (job, updateProgress) => {
-    updateProgress(50);
-    const data = job.data as { signatureValue?: string; rawXml?: string };
-    const isValid = Boolean(data.signatureValue && data.signatureValue.length > 10);
+    updateProgress(30);
+    const data = job.data as { signedXml?: string; expectedCertificatePem?: string };
+    if (!data.signedXml || typeof data.signedXml !== "string") {
+      throw new Error("verify_signature requires data.signedXml (the XML with an enveloped XML-DSig signature).");
+    }
+    const result = signingEngine.verifyEcfXml(data.signedXml, data.expectedCertificatePem);
     updateProgress(100);
     return {
-      verified: isValid,
+      verified: result.valid,
+      errors: result.errors,
       verifiedAt: new Date().toISOString(),
-      validationProfile: "DGII_LEY_32_23",
+      // cryptographic check only; conformance with the DGII XSD and test vectors is not claimed (see docs/SIGNING_CERTIFICATES.md)
+      validationProfile: "XMLDSIG_CRYPTOGRAPHIC_ONLY",
     };
   });
+
+  const auditSigning = (outcome: "success" | "error") => (job: { id: string; tenantId: string; operation: string }) => {
+    try {
+      audit.record({ correlationId: job.id, tenantId: job.tenantId || "platform", actor: "queue-worker", action: `job:${job.operation}`, resource: job.id, outcome, details: { operation: job.operation } });
+    } catch { /* auditing must never break signing */ }
+  };
+  queue.on("job:completed", auditSigning("success"));
+  queue.on("job:failed", auditSigning("error"));
 
   registerTransactionRoutes(app, { queue, sseHub, webhookDispatcher });
 
