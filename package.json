@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "migrate": "node dist/storage/cli.js migrate",
     "ledger:verify": "node dist/storage/cli.js verify",
+    "docs:reencrypt": "node dist/cli/reencrypt-documents.js",
     "dev": "tsx watch src/server.ts"
   },
   "engines": {
