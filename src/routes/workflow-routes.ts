@@ -97,7 +97,13 @@ export function registerWorkflowRoutes(
         return reply.code(OTP_STATUS[e.code]).send({ error: `OTP_${e.code}`, message: e.message, ...e.meta });
       }
       if (e instanceof OtpChannelError) return reply.code(e.status).send({ error: e.code, message: e.message });
-      if (e instanceof DocumentError) return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      if (e instanceof DocumentError) {
+        if (e.code === "KEY_UNAVAILABLE" || e.code === "DECRYPT_FAILED") {
+          reply.log.error(e); // the detail (key id, cause) stays in the server log, not in the response
+          return reply.code(500).send({ error: "DOCUMENT_UNAVAILABLE", message: "The stored document could not be read." });
+        }
+        return reply.code(e.code === "TOO_LARGE" ? 413 : e.code === "NOT_FOUND" ? 404 : 400).send({ error: e.code, message: e.message });
+      }
       throw e;
     }
   };
