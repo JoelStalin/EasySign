@@ -17,10 +17,12 @@ import { registerWorkflowRoutes } from "./routes/workflow-routes.js";
 import { SignatureWorkflow } from "./services/signature-workflow.js";
 import { registerSignPage } from "./routes/sign-page.js";
 import type { DeliveryProvider } from "./services/delivery.js";
+import { emailDeliveryProviders, mailProviderFromEnv, type MailProvider } from "./services/mail.js";
+import type { SignerOtpService } from "./services/signer-otp.js";
 import { DocumentStore, documentStoreFromEnv } from "./services/document-store.js";
 import { buildServiceDisclosure, NON_QUALIFIED_NOTICE, type ServiceDisclosure } from "./services/legal-notices.js";
 
-export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore } = {}) {
+export function buildApp(options: { queueConcurrency?: number; registry?: CertificateRegistry; registryAdminToken?: string; consentLedger?: ConsentLedger; disclosure?: ServiceDisclosure; auditLog?: AuditLog; workflow?: SignatureWorkflow; authenticator?: Authenticator; publicBaseUrl?: string; deliveryProviders?: DeliveryProvider[]; documents?: DocumentStore; mailProvider?: MailProvider; otp?: SignerOtpService } = {}) {
   const app = Fastify({ logger: false });
 
   const staticAdminToken = "registryAdminToken" in options ? options.registryAdminToken : process.env.EASYSIGN_ADMIN_TOKEN;
@@ -90,9 +92,13 @@ export function buildApp(options: { queueConcurrency?: number; registry?: Certif
   const disclosure = "disclosure" in options ? options.disclosure : loadDisclosure();
   const consentLedger = options.consentLedger ?? new ConsentLedger({ filePath: process.env.EASYSIGN_CONSENT_FILE });
   registerConsentRoutes(app, consentLedger, disclosure, guard);
+  // Outbound mail: `none` (default) keeps the previous behaviour, the link goes back to the administrator.
+  const mail = options.mailProvider ?? mailProviderFromEnv(process.env);
+  const platformName = (disclosure?.config as Record<string, string> | undefined)?.platformName || process.env.EASYSIGN_MAIL_FROM_NAME?.trim() || "EasySign";
   registerWorkflowRoutes(app, options.workflow ?? new SignatureWorkflow({ filePath: process.env.EASYSIGN_WORKFLOW_FILE }), consentLedger, disclosure, guard, {
     publicBaseUrl: "publicBaseUrl" in options ? options.publicBaseUrl : process.env.EASYSIGN_PUBLIC_BASE_URL,
-    providers: options.deliveryProviders,
+    providers: options.deliveryProviders ?? emailDeliveryProviders(mail, platformName),
+    mail, otp: options.otp, audit, platformName,
     documents: options.documents ?? documentStoreFromEnv(process.env), // refuses to start in production without a document key
   });
   registerSignPage(app);

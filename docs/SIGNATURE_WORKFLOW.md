@@ -25,7 +25,7 @@ Firmante (token en el cuerpo): `POST /v1/signature-workflows/:id/signers/:signer
 `EASYSIGN_WORKFLOW_FILE` (JSONL; sin él, solo memoria), además de `EASYSIGN_ADMIN_TOKEN`, `EASYSIGN_DISCLOSURE_FILE`, `EASYSIGN_CONSENT_FILE`, `EASYSIGN_AUDIT_FILE`.
 
 ## Pendiente
-- Entrega de enlaces por correo/WhatsApp (ES-013); hoy el administrador recibe los tokens y los entrega.
+- Entrega de enlaces por WhatsApp (ES-013): sin proveedor; el administrador recibe los tokens y los entrega. El correo ya tiene proveedor opcional (Cloudflare) y código de verificación del firmante: ver `docs/EMAIL_AND_OTP.md`.
 - Verificación de identidad del firmante (OTP) y fortaleza de la evidencia: hoy el token prueba control del canal donde se entregó, no la identidad civil.
 - Sellado criptográfico del documento firmado (PAdES/XAdES básico con el sello de EasySign) y sello de tiempo.
 - Los datos personales (nombre y correo) quedan en un log inmutable: definir con el abogado la política de retención y supresión (Ley 172-13) y valorar guardar solo un hash del correo.
