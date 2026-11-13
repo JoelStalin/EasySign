@@ -122,7 +122,7 @@ test("API: end to end with consent ledger, signer privacy, audit without tokens,
   const created = await app.inject({ method: "POST", url: "/v1/signature-workflows", headers: h, payload: input() });
   assert.equal(created.statusCode, 201);
   const id = created.json().id;
-  const sent = (await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h })).json();
+  const sent = (await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h, payload: { acknowledgeNoDocument: true } })).json();
   const a = sent.tokens[0];
   const base = `/v1/signature-workflows/${id}/signers/${a.signerId}`;
 
@@ -160,5 +160,5 @@ test("API: requests cannot be sent until the service disclosure is published", a
   const app = buildApp({ registryAdminToken: "tok", disclosure: undefined, workflow: new SignatureWorkflow() });
   const h = { authorization: "Bearer tok" };
   const id = (await app.inject({ method: "POST", url: "/v1/signature-workflows", headers: h, payload: input() })).json().id;
-  assert.equal((await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h })).statusCode, 503);
+  assert.equal((await app.inject({ method: "POST", url: `/v1/signature-workflows/${id}/send`, headers: h, payload: { acknowledgeNoDocument: true } })).statusCode, 503);
 });

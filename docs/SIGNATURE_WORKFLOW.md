@@ -49,3 +49,19 @@ Estática y sin secretos. Muestra el aviso de que no tiene valor de firma digita
 - La página muestra la **huella** del documento pero aún no el documento: falta un visor/descarga del documento antes de firmar (pendiente, importante para la solidez de la evidencia).
 - Quien escanea el QR (o abre el enlace) puede firmar: el token prueba posesión del enlace, no identidad civil. Para QR en pantalla, el cliente debe asegurarse de que lo escanea el firmante correcto; el OTP de identidad sigue pendiente.
 - Los proveedores de correo y WhatsApp no están integrados.
+
+## Visor del documento: el firmante ve lo que firma
+- **Subida (administrador):** `PUT /v1/signature-workflows/:id/document` con el archivo como cuerpo (`application/pdf`, `image/png`, `image/jpeg` o `text/plain`) y, opcional, `X-File-Name`. El servidor **calcula el SHA-256 del archivo y lo compara con el `documentHash` de la solicitud** (si no coincide, 409). Solo se acepta mientras la solicitud es un borrador. Máximo 10 MB.
+- **El tipo lo decide el contenido, no el cliente:** se reconoce por los bytes (PDF, PNG, JPEG o texto UTF-8 sin bytes nulos). Ejecutables y binarios se rechazan (400). El nombre de archivo se sanea.
+- **Almacén por huella:** el archivo se guarda con su SHA-256 como nombre (`EASYSIGN_DOCS_DIR`; sin él, solo memoria). Al leerlo se recalcula el hash: si el archivo se alteró en disco, no se entrega.
+- **Sin documento no se envía:** `POST .../send` responde 409 `DOCUMENT_REQUIRED` salvo que el administrador confirme con `{"acknowledgeNoDocument": true}` que el firmante no podrá abrirlo en la plataforma (entonces la página le pide comparar la huella).
+- **El firmante debe abrirlo:** `POST .../signers/:signerId/document {token}` entrega el archivo y registra el evento `document_viewed` (una vez, con fecha). Sin abrirlo, el servidor rechaza aceptar los términos y firmar (409), y la página no muestra esos pasos. La evidencia incluye `documentViewedAt` por firmante.
+- **Entrega segura:** `Content-Type` real, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` y `Content-Security-Policy: sandbox; default-src 'none'`. En la página, texto se muestra con `textContent`, imágenes con una URL local (`blob:`) y PDF se abre en otra pestaña o se descarga.
+- **Auditoría:** las subidas quedan auditadas sin guardar el contenido.
+
+Probado de extremo a extremo en un navegador real: `created → document_attached → sent → viewed → document_viewed → consented → signed → completed`.
+
+### Límites
+- Abrir el documento prueba que se entregó al navegador del firmante, no que lo leyó.
+- No hay visor de PDF incrustado (se abre en otra pestaña del navegador).
+- Documentos grandes o confidenciales: definir con el abogado cifrado en reposo y retención (hoy se guardan sin cifrar en `EASYSIGN_DOCS_DIR`; proteger el directorio).
